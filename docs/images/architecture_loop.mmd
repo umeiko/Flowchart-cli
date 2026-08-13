@@ -1,0 +1,27 @@
+flowchart TD
+    subgraph sub_interaction ["交互层"]
+        n1(["用户"]) --> n2["chat REPL"]
+        n9(["输出产物"]) --> n1
+    end
+
+    subgraph sub_agent ["主 Agent 层"]
+        n2 --> n3["主 Agent"]
+        n3 --> n4["Skill 调度"]
+    end
+
+    subgraph sub_loop ["生成验证循环"]
+        n4 --> n5["生成 Mermaid 代码"]
+        n5 --> n6{"语法预检"}
+        n6 -->|"不合法"| n5
+        n6 -->|"合法"| n7["渲染成图"]
+        n7 --> n8{"视觉验证"}
+        n8 -->|"不通过"| n5
+        n8 -->|"通过"| n9
+    end
+
+    classDef interaction fill:#e3f2fd,stroke:#90caf9,stroke-width:2px,color:#0d47a1
+    classDef agent fill:#e8f5e9,stroke:#a5d6a7,stroke-width:2px,color:#1b5e20
+    classDef loop fill:#fff3e0,stroke:#ffcc80,stroke-width:2px,color:#e65100
+    class sub_interaction interaction
+    class sub_agent agent
+    class sub_loop loop

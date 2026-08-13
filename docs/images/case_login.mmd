@@ -1,0 +1,6 @@
+flowchart TD
+    start_node([开始]) --> input_phone[输入手机]
+    input_phone --> input_pwd[输入密码]
+    input_pwd --> login_action[登录]
+    login_action --> login_success[登录成功]
+    login_success --> finish_node([完成])

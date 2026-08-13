@@ -1,0 +1,9 @@
+flowchart TD
+    Start(["开始"]) --> FillInfo["填写注册信息"]
+    FillInfo --> Validate{"校验信息"}
+    Validate -->|"不通过"| Retry["重新填写"]
+    Retry --> FillInfo
+    Validate -->|"通过"| SendSMS["发送短信验证码"]
+    SendSMS --> InputSMS["用户输入短信验证码"]
+    InputSMS --> Success["注册成功"]
+    Success --> Finish(["结束"])

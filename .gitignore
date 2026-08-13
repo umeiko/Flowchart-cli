@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+output*/
+.DS_Store
+frdetr*/
+test_datas/

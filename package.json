@@ -1,0 +1,9 @@
+{
+  "name": "flowchart_ai",
+  "private": true,
+  "description": "Mermaid 语法预检的 Node 依赖（scripts/mermaid_parse.mjs 使用 mermaid.parse）",
+  "dependencies": {
+    "jsdom": "^30.0.1",
+    "mermaid": "^11.16.1"
+  }
+}
