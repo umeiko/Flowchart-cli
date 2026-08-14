@@ -29,6 +29,14 @@ class Settings:
     # mmdc 渲染使用的 Chrome 可执行文件路径（puppeteer executablePath）。
     # 公司 Windows 等环境 puppeteer 自带 Chromium 不可用时，指向本机 chrome.exe。
     chrome_path: str | None = None
+    # 视觉检视强度：full=完整检视（排版+内容语义），layout=仅基础图形检视
+    # （排版/遮挡/连线，不逐字核对内容；视觉模型识字能力弱时用，防止误判死循环）
+    verify_mode: str = "full"
+    # PNG 渲染缩放倍数（mmdc -s），大图默认分辨率低、文字看不清时提高它
+    render_scale: str = "2"
+    # PNG 视口宽度（mmdc -w）。mermaid 会把图整体压缩进视口宽度（默认 800），
+    # 宽图文字会被压到看不清；调大后按自然尺寸渲染，小图不受影响
+    render_width: str = "4096"
 
 
 def _require(key: str) -> str:
@@ -57,6 +65,9 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
         output_format=os.getenv("OUTPUT_FORMAT", "png"),
         render_background=os.getenv("RENDER_BACKGROUND", "white"),
         chrome_path=os.getenv("CHROME_PATH") or None,
+        verify_mode=(os.getenv("VERIFY_MODE") or "full").lower(),
+        render_scale=os.getenv("RENDER_SCALE") or "2",
+        render_width=os.getenv("RENDER_WIDTH") or "4096",
         text_model_vision=os.getenv("TEXT_MODEL_VISION", "").lower()
         in ("1", "true", "yes"),
     )

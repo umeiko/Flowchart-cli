@@ -168,6 +168,52 @@ def build_skills(session: DiagramSession, image_queue: ImageQueue) -> list[Skill
             handler=session.set_style,
         ),
         Skill(
+            name="set_verification",
+            description=(
+                "调整视觉检视强度（作用于后续生成与修改）。"
+                "full=完整检视：排版结构 + 内容与逻辑核对；"
+                "layout=仅基础图形检视：只查文字排版错误、连线混乱、方框遮挡，"
+                "不逐字核对内容。当视觉模型文字识别能力弱、反复因读错字导致"
+                "验证不通过时，应降为 layout。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["full", "layout"],
+                        "description": "检视强度：full 或 layout",
+                    },
+                },
+                "required": ["mode"],
+            },
+            handler=session.set_verify_mode,
+        ),
+        Skill(
+            name="create_style",
+            description=(
+                "根据用户的自然语言风格描述，生成一个新的作图风格插件"
+                "（写入 styles/ 目录的 .md 文件，内部会自动校验格式并试渲染，"
+                "成功后自动切换为当前风格）。当现有风格模板（list_styles）"
+                "都不能满足用户的风格需求时调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "风格标识（英文小写，可含数字/下划线/连字符），如 handdrawn",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "完整的风格要求描述，如：手绘风格，暖色调，适合产品评审",
+                    },
+                },
+                "required": ["name", "description"],
+            },
+            handler=session.create_style,
+        ),
+        Skill(
             name="modify_diagram",
             description=(
                 "按用户的修改意见调整当前流程图（内部同样会渲染校验并视觉验证）。"
@@ -184,6 +230,55 @@ def build_skills(session: DiagramSession, image_queue: ImageQueue) -> list[Skill
                 "required": ["instruction"],
             },
             handler=session.modify,
+        ),
+        Skill(
+            name="restyle_diagram",
+            description=(
+                "只调整当前流程图的风格（配色、主题、背景等），内容与结构严格保持原样"
+                "（内部有骨架校验，任何内容改动都会被拒绝）。风格来源二选一："
+                "style_name 指定现有风格模板（来自 list_styles），或 style_document "
+                "传入风格要求文本（用户给了风格文档路径时先 read_document 读取再传入）。"
+                "当用户只想换风格、不想改内容时调用；要改内容用 modify_diagram。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "style_name": {
+                        "type": "string",
+                        "description": "可选：现有风格模板名，如 dark",
+                    },
+                    "style_document": {
+                        "type": "string",
+                        "description": "可选：风格要求的完整文本（或风格文档的内容）",
+                    },
+                },
+            },
+            handler=session.restyle,
+        ),
+        Skill(
+            name="list_skill_packs",
+            description=(
+                "列出 skills/ 目录下所有可用的技能包（名称与适用场景）。"
+                "遇到自己不熟悉领域的任务（如特定导出格式、行业图表规范、"
+                "第三方工具对接）时，先调用本工具看看有没有现成指引。"
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=session.list_skill_packs,
+        ),
+        Skill(
+            name="use_skill",
+            description=(
+                "读取指定技能包的完整操作指引并遵照执行。"
+                "技能包名须来自 list_skill_packs。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能包名，如 drawio-export"},
+                },
+                "required": ["name"],
+            },
+            handler=session.use_skill,
         ),
         Skill(
             name="get_current_diagram",

@@ -39,6 +39,8 @@ def render_mermaid(
     fmt: str = "png",
     background: str = "white",
     chrome_path: str | None = None,
+    scale: str | None = None,
+    width: str | None = None,
 ) -> RenderResult:
     """把 Mermaid 代码写入 <output_dir>/<stem>.mmd，预检后用 mmdc 渲染为 <stem>.<fmt>。
 
@@ -47,6 +49,11 @@ def render_mermaid(
     会导致"用户描述背景色但图永远对不上"的验证死循环。
     chrome_path：指定 Chrome 可执行文件（公司 Windows 上 puppeteer 自带
     Chromium 常不可用），设置后自动生成 puppeteer-config.json 并传 -p。
+    scale：PNG 缩放倍数（mmdc -s），大图表分辨率低、文字看不清时提高；
+    仅对 PNG 生效（SVG 是矢量图无需缩放）。
+    width：PNG 视口宽度（mmdc -w）。mermaid 会把图整体压缩进视口宽度
+    （mmdc 默认 800），宽图文字被压扁；调大后按自然尺寸渲染，
+    小图不会留白或放大。仅对 PNG 生效。
     """
     if shutil.which("mmdc") is None:
         raise MermaidCliNotFoundError(
@@ -65,7 +72,7 @@ def render_mermaid(
         return RenderResult(ok=False, mmd_path=mmd_path, error=f"[语法预检] {parse_error}")
 
     proc = subprocess.run(
-        _mmdc_command(mmd_path, image_path, background, chrome_path),
+        _mmdc_command(mmd_path, image_path, background, chrome_path, scale, fmt, width),
         capture_output=True,
         text=True,
         timeout=60,
@@ -95,13 +102,22 @@ def _mmdc_command(
     image_path: Path,
     background: str,
     chrome_path: str | None = None,
+    scale: str | None = None,
+    fmt: str = "png",
+    width: str | None = None,
 ) -> list[str]:
     """构造 mmdc 调用命令。Windows 上 mmdc 是 .cmd 批处理，CreateProcess 无法
-    直接执行，必须经 cmd /c 调用。"""
+    直接执行，必须经 cmd /c 调用。scale（-s）与 width（-w）只对 PNG 传，
+    SVG 是矢量图，自然宽度不受视口限制。"""
     args = ["mmdc", "-i", str(mmd_path), "-o", str(image_path), "-b", background]
     if chrome_path:
         config = _write_puppeteer_config(mmd_path.parent, chrome_path)
         args += ["-p", str(config)]
+    if fmt == "png":
+        if scale:
+            args += ["-s", str(scale)]
+        if width:
+            args += ["-w", str(width)]
     if sys.platform == "win32":
         return ["cmd", "/c", *args]
     return args

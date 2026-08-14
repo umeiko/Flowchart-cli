@@ -11,6 +11,7 @@ from .config import Settings
 from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
+from .skillpacks import get_skill_pack, load_skill_packs
 
 
 class DiagramSession:
@@ -25,7 +26,7 @@ class DiagramSession:
 
     def __init__(self, settings: Settings, output_dir: str | Path):
         self._agent = FlowchartAgent(settings)
-        self._chrome_path = settings.chrome_path
+        self._settings = settings
         self._output_dir = Path(output_dir)
         self._default_bg = settings.render_background
         self.requirement = ""
@@ -36,6 +37,63 @@ class DiagramSession:
         self._background_override: str | None = None  # 用户显式指定的画布背景色
         # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
         self.on_delta: Callable[[str], None] | None = None
+        # 界面层的轮次开始回调（清空上一轮流式显示）；None = 不需要
+        self.on_round_start: Callable[[int], None] | None = None
+        # 视觉检视强度：full=完整（排版+内容语义），layout=仅基础图形检视
+        self.verify_mode = settings.verify_mode
+
+    def set_verify_mode(self, mode: str) -> str:
+        """切换视觉检视强度（set_verification 工具的 handler）。"""
+        mode = mode.strip().lower()
+        if mode not in ("full", "layout"):
+            return f"错误：未知检视强度 {mode!r}，可选：full、layout。"
+        self.verify_mode = mode
+        if mode == "layout":
+            return (
+                "已切换为基础图形检视（layout）：只检查排版、遮挡、连线结构，"
+                "不再逐字核对内容。适用于视觉模型文字识别能力较弱的场景。"
+            )
+        return "已切换为完整检视（full）：排版结构 + 内容与逻辑核对。"
+
+    def list_skill_packs(self) -> str:
+        """列出 skills/ 目录下所有技能包（list_skill_packs 工具的 handler）。"""
+        packs = load_skill_packs()
+        if not packs:
+            return "skills 目录下没有可用的技能包。"
+        return "可用技能包：\n" + "\n".join(
+            f"- {p.name}：{p.description}" for p in packs.values()
+        )
+
+    def use_skill(self, name: str) -> str:
+        """读取技能包完整指引（use_skill 工具的 handler）。"""
+        try:
+            pack = get_skill_pack(name)
+        except ValueError as e:
+            return f"错误：{e}"
+        return (
+            f"以下是技能包 {pack.name} 的操作指引，请严格遵照执行：\n\n"
+            f"{pack.instructions}"
+        )
+
+    def create_style(self, name: str, description: str) -> str:
+        """风格生成子 Agent 入口（create_style 工具的 handler）。
+
+        校验通过的风格落盘到 styles/ 后自动切换为当前风格，即刻生效。
+        """
+        from .style_agent import StyleAgent  # 延迟导入：仅用到时加载
+
+        result = StyleAgent(self._settings).create(name, description)
+        if not result.ok:
+            return f"风格生成失败：{result.error}"
+        try:
+            self.style = get_style(name)  # 重新扫描 styles/，拿到刚落盘的插件
+        except ValueError as e:  # 理论上刚校验过不会到这步，兜底
+            return f"风格文件已生成（{result.path}），但加载失败：{e}"
+        return (
+            f"风格插件已生成（{result.rounds} 轮通过校验）：{result.path}\n"
+            f"已自动切换为当前风格：{self.style.name}（{self.style.description}）\n"
+            "后续生成与修改将使用该风格。"
+        )
 
     @property
     def has_diagram(self) -> bool:
@@ -142,6 +200,8 @@ class DiagramSession:
             background=self._background_override,
             style=self.effective_style,
             on_delta=self.on_delta,
+            verify_mode=self.verify_mode,
+            on_round_start=self.on_round_start,
         )
         if not result.success:
             feedback = result.final_feedback or "未知原因"
@@ -149,24 +209,70 @@ class DiagramSession:
                 f"生成失败：{len(result.rounds)} 轮后仍未通过验证。\n"
                 f"最后的验证意见：{feedback}\n过程日志见 {run_dir}/run.log"
             )
-        self.current_code = result.mermaid_code
-        self.current_image = result.image_path
-        # 同步到固定文件名（mmd/png/svg），方便用户查看"当前这张图"
+        return self._publish(
+            result.mermaid_code, result.image_path, run_dir,
+            f"成功（{len(result.rounds)} 轮通过验证）。",
+        )
+
+    def restyle(self, style_name: str | None = None, style_document: str | None = None) -> str:
+        """风格转换子 Agent 入口（restyle_diagram 工具的 handler）。
+
+        只调整样式层，内容与结构由骨架校验保证零改动。风格来源二选一：
+        现有风格模板（style_name）或自由风格文本（style_document）。
+        """
+        if not self.has_diagram:
+            return "还没有生成过流程图，请先描述需求创建一张图。"
+        style_obj = None
+        spec = ""
+        if style_name:
+            try:
+                style_obj = get_style(style_name)
+            except ValueError as e:
+                return f"错误：{e}"
+        elif style_document and style_document.strip():
+            spec = style_document.strip()
+        else:
+            return "错误：需要 style_name（现有风格模板）或 style_document（风格要求文本）之一。"
+
+        from .restyle_agent import RestyleAgent  # 延迟导入：仅用到时加载
+
+        self.version += 1
+        run_dir = self._output_dir / f"v{self.version}"
+        result = RestyleAgent(self._settings).restyle(
+            self.current_code,
+            style=style_obj,
+            spec=spec,
+            background=self._background_override,
+            output_dir=run_dir,
+        )
+        if not result.ok:
+            return f"风格转换失败：{result.error}\n过程产物见 {run_dir}"
+        if style_obj:
+            self.style = style_obj  # 后续生成/修改也沿用该风格
+        return self._publish(
+            result.code, result.image_path, run_dir,
+            f"风格转换成功（{result.rounds} 轮通过校验，内容与结构未改动）。",
+        )
+
+    def _publish(self, code: str, image_path: Path | None, run_dir: Path, note: str) -> str:
+        """把最新结果同步为会话当前状态，并落到 current.mmd / current.png / current.svg。"""
+        self.current_code = code
+        self.current_image = image_path
         final_mmd = self._output_dir / "current.mmd"
-        final_mmd.write_text(self.current_code, encoding="utf-8")
+        final_mmd.write_text(code, encoding="utf-8")
         current_img = None
-        if result.image_path:
-            current_img = self._output_dir / f"current{result.image_path.suffix}"
-            shutil.copy(result.image_path, current_img)
+        if image_path:
+            current_img = self._output_dir / f"current{image_path.suffix}"
+            shutil.copy(image_path, current_img)
         svg = render_mermaid(
-            result.mermaid_code, self._output_dir,
+            code, self._output_dir,
             stem="current", fmt="svg", background=self.background,
-            chrome_path=self._chrome_path,
+            chrome_path=self._settings.chrome_path,
         )
         svg_note = f"\nSVG：{svg.image_path}" if svg.ok else ""
         return (
-            f"成功（{len(result.rounds)} 轮通过验证）。\n"
+            f"{note}\n"
             f"Mermaid 代码：{final_mmd}\n"
             f"渲染图片：{current_img}{svg_note}\n"
-            f"过程日志：{run_dir}/run.log"
+            f"过程产物：{run_dir}"
         )

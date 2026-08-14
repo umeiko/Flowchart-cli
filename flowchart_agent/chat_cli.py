@@ -6,7 +6,7 @@
 - Ctrl+C 取消当前输入或进行中的请求，Ctrl+D 退出；
 - 拖入图片文件自动变成彩色 [图片:文件名] 芯片，Backspace 一次整块删除；
 - 模型输出流式实时显示：生成 Mermaid 与最终回复都边产出边滚动，
-  服务商不支持流式时自动退回一次性显示。
+  每轮生成只显示当前一轮的内容，服务商不支持流式时自动退回一次性显示。
 """
 
 from __future__ import annotations
@@ -81,6 +81,7 @@ def run_chat(settings: Settings, output_dir: Path) -> int:
     session = DiagramSession(settings, output_dir)
     display = _StreamDisplay(console)
     session.on_delta = display.show_generation  # 生成循环的 Mermaid 原文流
+    session.on_round_start = display.reset_segment  # 每轮清空上一段，避免堆砌
     agent = MainAgent(
         settings, session,
         on_tool_call=_show_tool_call,
@@ -191,6 +192,13 @@ class _StreamDisplay:
 
     def show_generation(self, delta: str) -> None:
         self._feed("[bold cyan]生成 Mermaid 中…[/bold cyan]", "cyan", delta)
+
+    def reset_segment(self, _round_no: int = 0) -> None:
+        """新一轮生成开始：清空上一段（上一轮的 Mermaid 原文），
+        避免多轮生成文本在显示区里堆砌。"""
+        self._buf = []
+        if self._live is not None:
+            self._live.update(Spinner("dots", text="[cyan]助手工作中…[/cyan]"))
 
     def _feed(self, title: str, border: str, delta: str) -> None:
         if self._live is None:

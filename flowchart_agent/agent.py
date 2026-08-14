@@ -21,6 +21,7 @@ class RoundRecord:
     mermaid_code: str
     render_ok: bool
     image_path: Path | None = None
+    svg_path: Path | None = None
     feedback: str = ""
 
 
@@ -49,6 +50,8 @@ class FlowchartAgent:
         background: str | None = None,
         style: Style | None = None,
         on_delta=None,
+        verify_mode: str = "full",
+        on_round_start=None,
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -59,6 +62,9 @@ class FlowchartAgent:
         background：画布背景色，优先于 style 的背景与 RENDER_BACKGROUND 配置。
         style：风格插件（见 styles.py），注入主题指令并提供默认背景色。
         on_delta：生成阶段的流式文本回调（界面层实时显示），None 为非流式。
+        verify_mode：视觉检视强度，full=完整检视（排版+内容语义），
+        layout=仅基础图形检视（视觉模型识字能力弱时用，防止误判死循环）。
+        on_round_start：每轮开始时回调（界面层清空上一轮的流式显示）。
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +89,8 @@ class FlowchartAgent:
             logger.info("任务开始：输出目录 %s", output_dir)
             for round_no in range(1, self._settings.max_rounds + 1):
                 logger.info("=== 第 %d/%d 轮 ===", round_no, self._settings.max_rounds)
+                if on_round_start:
+                    on_round_start(round_no)
 
                 # 1. 生成 / 修复
                 code, raw = self._generate(
@@ -111,6 +119,8 @@ class FlowchartAgent:
                     styled, output_dir, stem=f"round_{round_no}",
                     fmt=self._settings.output_format, background=bg,
                     chrome_path=self._settings.chrome_path,
+                    scale=self._settings.render_scale,
+                    width=self._settings.render_width,
                 )
                 record.render_ok = render.ok
                 record.image_path = render.image_path
@@ -121,8 +131,22 @@ class FlowchartAgent:
                     continue
                 logger.info("第 %d 轮：渲染成功 -> %s", round_no, render.image_path)
 
+                # 2.5 顺便出一份 SVG（矢量图便于查看与二次编辑；失败不影响主流程）
+                if self._settings.output_format != "svg":
+                    svg = render_mermaid(
+                        styled, output_dir, stem=f"round_{round_no}", fmt="svg",
+                        background=bg, chrome_path=self._settings.chrome_path,
+                    )
+                    if svg.ok:
+                        record.svg_path = svg.image_path
+                    else:
+                        logger.warning("第 %d 轮：SVG 渲染失败（不影响主流程）-> %s",
+                                       round_no, svg.error[:200])
+
                 # 3. 多模态视觉验证
-                passed, critique, raw_reply = self._verify(document, render.image_path)
+                passed, critique, raw_reply = self._verify(
+                    document, render.image_path, verify_mode
+                )
                 raw_path = output_dir / f"round_{round_no}_verify_raw.txt"
                 raw_path.write_text(raw_reply, encoding="utf-8")
                 record.feedback = critique
@@ -192,11 +216,20 @@ class FlowchartAgent:
             raw = self._text_llm.chat(messages)
         return extract_mermaid(raw), raw
 
-    def _verify(self, document: str, image_path: Path) -> tuple[bool, str, str]:
-        """返回 (是否通过, 问题列表, 模型原始回复)。"""
-        reply = self._vision_llm.chat_with_image(
-            prompts.VERIFY_PROMPT.format(document=document), image_path
-        ).strip()
+    def _verify(
+        self, document: str, image_path: Path, mode: str = "full"
+    ) -> tuple[bool, str, str]:
+        """返回 (是否通过, 问题列表, 模型原始回复)。
+
+        mode=layout 时只做基础图形检视（排版/遮挡/连线），prompt 不带文档，
+        避免视觉模型因文字识别错误反复误判；mode=full 额外核对内容与逻辑。
+        """
+        if mode == "layout":
+            prompt = prompts.VERIFY_LAYOUT_PROMPT
+            logger.info("视觉检视模式：layout（仅基础图形检视）")
+        else:
+            prompt = prompts.VERIFY_PROMPT.format(document=document)
+        reply = self._vision_llm.chat_with_image(prompt, image_path).strip()
         if reply.upper().startswith("PASS"):
             return True, "", reply
         # FAIL：去掉首行标志，保留问题列表

@@ -95,7 +95,7 @@ Skill 的 `parameters` 采用 JSON Schema，与 MCP 工具的 `inputSchema` 同�
 - 渲染前先经 `mermaid.parse` 快速语法预检（Node + jsdom，约 1 秒，不启动 Chromium）；预检失败直接反馈修复，省去完整渲染。
 - 使用 `mmdc`（mermaid-cli）渲染，作为语法与结构的权威校验。
 - 渲染失败时，将 stderr 错误信息 + 当前代码反馈给文本模型修复，进入下一轮。
-- 渲染产物：`output/round_<n>.mmd` 与 `output/round_<n>.png`，保留每轮中间结果便于调试；最终产物同时输出 SVG（`current.svg` / `final.svg`）。
+- 渲染产物：`output/round_<n>.mmd`、`round_<n>.png` 与 `round_<n>.svg`（每轮渲染成功即顺带出 SVG，失败不影响主流程），保留每轮中间结果便于调试；最终产物同时输出 SVG（`current.svg` / `final.svg`）。
 - 生成/修复 Prompt 内置 Mermaid 语法硬规则（特殊字符必须双引号包裹、节点 id 只用英文/数字/下划线等），从源头减少语法错误。
 - 画布背景默认白色（`RENDER_BACKGROUND` 配置），禁止透明背景——透明背景会让视觉验证对"用户描述的背景色"永远判 FAIL 形成死循环；用户在需求中指定背景色时经 `create_diagram` 的 `background` 参数逐图设置。
 - 视觉验证 Prompt 含样式宽容规则：文档未明确指定样式时，配色/布局/字体不得作为 FAIL 理由。
@@ -110,17 +110,31 @@ Skill 的 `parameters` 采用 JSON Schema，与 MCP 工具的 `inputSchema` 同�
   用户编辑 `styles/default.md` 即可定制全局默认风格。
 - 用户新增风格只需往目录丢一个 `.md` 文件，无需改代码、无需重启（每次调用重新扫描）；
   无 frontmatter 的文件（如 styles/README.md）自动忽略。
+- 风格生成子 Agent（`create_style` 工具，`style_agent.py`）：用户口述风格需求时，
+  文本模型起草插件文件 → frontmatter 结构校验（复用风格 parser）→ init 指令格式检查
+  （mermaid 对畸形 init 静默忽略，渲染抓不出，须主动检查包裹格式与括号配对）→
+  示例图试渲染，最多 3 轮修复；通过后落盘 styles/ 并自动切换为当前风格。
+- 风格转换子 Agent（`restyle_diagram` 工具，`restyle_agent.py`）：只调整当前图的
+  样式层（init/classDef/class/style/linkStyle/:::标记），风格来源为现有模板
+  （style_name）或自由风格文本（style_document，文档路径先 read_document）。
+  内容零改动由机械骨架校验保证：剥掉新旧代码的全部样式语句后结构骨架必须逐行
+  一致，否则打回重生成（最多 3 轮），另过 mmdc 渲染校验。成功后切换会话风格并
+  同步 current.* 产物。
 - run 模式支持 `--style <名称>`；风格指令注入代码开头（已有 init 指令时不重复注入），
   最终 .mmd 产物自带风格，导入 draw.io 等工具渲染效果一致。
 
 ### FR-3 多模态视觉验证 loop（语义层）
-- 渲染成功后，把 PNG 图片 + 原始文档一起交给多模态模型。
-- 验证模型输出结构化结论：`PASS` 或 `FAIL: <具体问题列表>`。
-- 检查维度（写入验证 Prompt）：
-  - 节点是否完整覆盖文档中的步骤；
-  - 节点之间的连接/方向是否正确；
-  - 分支判断逻辑是否与文档一致；
-  - 节点文字是否与文档语义一致（无臆造、无遗漏）。
+- 渲染成功后，把渲染图交给多模态模型检视，输出结构化结论：`PASS` 或 `FAIL: <具体问题列表>`。
+- 检视分两个阶段/强度（`VERIFY_MODE` 配置，chat 中可用 `set_verification` 工具实时切换）：
+  - **基础图形检视（layout，常驻底线）**：文字是否截断/溢出/重叠、节点框是否遮挡、
+    连线是否混乱缠绕、分支标签是否存在可读；不逐字核对文字内容——
+    视觉模型识字能力弱（如 qwen3-30B 级别）时避免读错字导致的验证死循环；
+  - **完整检视（full，默认）**：在 layout 之上叠加内容与逻辑核对——节点完整性、
+    连接与方向、分支逻辑、文字与文档语义一致性（prompt 携带原始文档）。
+- PNG 渲染默认 2 倍缩放（`RENDER_SCALE`，mmdc `-s`）+ 4096 视口宽度
+  （`RENDER_WIDTH`，mmdc `-w`）：mermaid 会把图整体压缩进视口宽度（mmdc 默认 800），
+  宽图文字被压扁导致检视误判；调大视口后按自然尺寸渲染，小图不留白。
+  SVG 为矢量图不受影响。
 - FAIL 时将问题列表反馈给文本模型修复，回到 FR-2。
 
 ### FR-4 循环控制
@@ -147,6 +161,17 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 - 流式状态显示：主 Agent 回复与生成循环的 Mermaid 原文以流式增量实时滚动展示（Live 区域，段落切换时清场，结束后整段擦除）；LLM 客户端优先 stream=True，服务商不支持或流传输失败时自动退回强制非流式重试，界面无感。
 - 每次生成/修改的版本产物保存在 `output/v<n>/`，当前结果固定在 `output/current.*`。
 - Skill 抽象（name/description/inputSchema/handler）为最小级别，后续可平移到 MCP。
+
+### FR-8 技能包系统（文件发现式，提示词型）
+- 技能包即文件：`skills/` 目录下每个带 frontmatter 的 `.md` 文件是一个技能包，
+  定义 `name` / `description`，正文为写给主 Agent 的操作手册。
+  目录可用 `FLOWCHART_SKILL_DIR` 覆盖，默认 `./skills`。
+- 主 Agent 自主发现与执行：`list_skill_packs` 列出技能包，`use_skill` 读取正文
+  注入对话并遵照执行（可编排 read_document / find_files / 流程图工具完成多步流程）；
+  系统提示要求遇到陌生领域任务时先查技能包。
+- 定位是"指引型"技能（社区 SKILL.md 式）：不含可执行脚本；需要跑代码的能力
+  做成内置工具（`skills/builtin.py`）。
+- 无 frontmatter 的文件（如 skills/README.md）自动忽略；内置示例 drawio-export。
 
 ## 5. 非功能需求
 
