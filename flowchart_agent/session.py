@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,8 @@ from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
 from .skillpacks import get_skill_pack, load_skill_packs
+
+logger = logging.getLogger(__name__)
 
 
 class DiagramSession:
@@ -214,6 +217,14 @@ class DiagramSession:
     ) -> str:
         self.version += 1
         run_dir = self._output_dir / f"v{self.version}"
+        if initial_code:
+            action = f"modify_diagram(修改意见：{initial_feedback[:100]})"
+        else:
+            action = (
+                f"create_diagram(需求 {len(self.requirement)} 字符"
+                + (f"，参考图 {reference_image}" if reference_image else "")
+                + ")"
+            )
         result = self._agent.run(
             self.requirement,
             run_dir,
@@ -225,6 +236,7 @@ class DiagramSession:
             on_delta=self.on_delta,
             verify_mode=self.verify_mode,
             on_round_start=self.on_round_start,
+            action=action,
         )
         if not result.success:
             feedback = result.final_feedback or "未知原因"
@@ -293,6 +305,10 @@ class DiagramSession:
             chrome_path=self._settings.chrome_path,
         )
         svg_note = f"\nSVG：{svg.image_path}" if svg.ok else ""
+        logger.info(
+            "产物发布：%s；%s%s；过程产物 %s",
+            note, final_mmd, f" {current_img}" if current_img else "", run_dir,
+        )
         return (
             f"{note}\n"
             f"Mermaid 代码：{final_mmd}\n"

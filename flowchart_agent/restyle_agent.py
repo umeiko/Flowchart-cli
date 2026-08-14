@@ -30,6 +30,21 @@ _STYLE_LINE_RE = re.compile(r"^(classDef|class|style|linkStyle)\b")
 _CLASS_MARK_RE = re.compile(r":::[\w-]+")
 
 
+def _attach_run_log(log_path: Path) -> logging.FileHandler:
+    """把风格转换过程同时写入 <output_dir>/run.log（与生成主循环同一约定）。"""
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    )
+    logging.getLogger("flowchart_agent").addHandler(handler)
+    return handler
+
+
+def _detach_run_log(handler: logging.FileHandler) -> None:
+    logging.getLogger("flowchart_agent").removeHandler(handler)
+    handler.close()
+
+
 @dataclass
 class RestyleResult:
     ok: bool
@@ -79,54 +94,64 @@ class RestyleAgent:
         bg = (style.background if style else None) or background or self._settings.render_background
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        handler = _attach_run_log(output_dir / "run.log")
 
         previous = ""
         feedback = ""
-        for round_no in range(1, _MAX_ROUNDS + 1):
-            logger.info("风格转换 第 %d/%d 轮", round_no, _MAX_ROUNDS)
-            raw = self._generate(code, style_spec, previous, feedback)
-            new_code = extract_mermaid(raw)
-            if not new_code:
-                feedback = "你的输出中没有可识别的 Mermaid 代码，请只输出 ```mermaid 代码块。"
-                logger.warning("风格转换 第 %d 轮：未提取到代码", round_no)
-                previous = raw
-                continue
+        try:
+            logger.info(
+                "任务开始：restyle_diagram(风格=%s，背景=%s，原代码 %d 字符)",
+                style.name if style else f"自由描述（{len(spec)} 字符）",
+                bg, len(code),
+            )
+            for round_no in range(1, _MAX_ROUNDS + 1):
+                logger.info("风格转换 第 %d/%d 轮", round_no, _MAX_ROUNDS)
+                raw = self._generate(code, style_spec, previous, feedback)
+                new_code = extract_mermaid(raw)
+                if not new_code:
+                    feedback = "你的输出中没有可识别的 Mermaid 代码，请只输出 ```mermaid 代码块。"
+                    logger.warning("风格转换 第 %d 轮：未提取到代码", round_no)
+                    previous = raw
+                    continue
 
-            # 1. 骨架校验：样式层之外的任何改动都拒绝
-            diff = _skeleton_diff(base_skeleton, structural_skeleton(new_code))
-            if diff:
-                feedback = (
-                    "你改动了图表的内容或结构，这是不允许的。只允许添加/替换样式层语句"
-                    "（init 指令、classDef/class/style/linkStyle、:::class 标记）。\n"
-                    f"差异如下：\n{diff}"
+                # 1. 骨架校验：样式层之外的任何改动都拒绝
+                diff = _skeleton_diff(base_skeleton, structural_skeleton(new_code))
+                if diff:
+                    feedback = (
+                        "你改动了图表的内容或结构，这是不允许的。只允许添加/替换样式层语句"
+                        "（init 指令、classDef/class/style/linkStyle、:::class 标记）。\n"
+                        f"差异如下：\n{diff}"
+                    )
+                    logger.warning("风格转换 第 %d 轮：骨架不一致\n%s", round_no, diff[:200])
+                    previous = new_code
+                    continue
+
+                # 2. 渲染校验
+                render = render_mermaid(
+                    new_code, output_dir, stem=f"restyle_r{round_no}",
+                    fmt=self._settings.output_format, background=bg,
+                    chrome_path=self._settings.chrome_path,
+                    scale=self._settings.render_scale,
+                    width=self._settings.render_width,
                 )
-                logger.warning("风格转换 第 %d 轮：骨架不一致\n%s", round_no, diff[:200])
-                previous = new_code
-                continue
+                if not render.ok:
+                    feedback = prompts.RENDER_ERROR_FEEDBACK.format(error=render.error)
+                    logger.warning("风格转换 第 %d 轮：渲染失败 -> %s", round_no, render.error[:200])
+                    previous = new_code
+                    continue
 
-            # 2. 渲染校验
-            render = render_mermaid(
-                new_code, output_dir, stem=f"restyle_r{round_no}",
-                fmt=self._settings.output_format, background=bg,
-                chrome_path=self._settings.chrome_path,
-                scale=self._settings.render_scale,
-                width=self._settings.render_width,
-            )
-            if not render.ok:
-                feedback = prompts.RENDER_ERROR_FEEDBACK.format(error=render.error)
-                logger.warning("风格转换 第 %d 轮：渲染失败 -> %s", round_no, render.error[:200])
-                previous = new_code
-                continue
+                logger.info("风格转换 第 %d 轮：校验通过 -> %s", round_no, render.image_path)
+                return RestyleResult(
+                    ok=True, code=new_code, image_path=render.image_path, rounds=round_no
+                )
 
-            logger.info("风格转换 第 %d 轮：校验通过 -> %s", round_no, render.image_path)
+            logger.warning("风格转换达到最大轮次 %d，任务失败", _MAX_ROUNDS)
             return RestyleResult(
-                ok=True, code=new_code, image_path=render.image_path, rounds=round_no
+                ok=False, rounds=_MAX_ROUNDS,
+                error=f"{_MAX_ROUNDS} 轮后仍未通过校验，最后的问题：{feedback}",
             )
-
-        return RestyleResult(
-            ok=False, rounds=_MAX_ROUNDS,
-            error=f"{_MAX_ROUNDS} 轮后仍未通过校验，最后的问题：{feedback}",
-        )
+        finally:
+            _detach_run_log(handler)
 
     @staticmethod
     def _build_spec(style: Style | None, spec: str) -> str:

@@ -87,6 +87,10 @@ uv run flowchart-agent run test_datas/1.txt -o output
 uv run flowchart-agent run test_datas/1.txt -o output --style dark
 ```
 
+**过程日志**：每次生成/修改的详细过程（触发动作、每轮生成/渲染/验证、每次 LLM
+请求的耗时与规模、mmdc 命令）写入 `output/v<n>/run.log`（run 模式为
+`output/run.log`）；chat 模式的全部工具调用另记于会话级 `output/chat.log`。
+
 ## 实现方案
 
 ![双层 Agent 生成验证循环](docs/images/architecture_loop.svg)

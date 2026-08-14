@@ -99,7 +99,8 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
 
     try:
         result = FlowchartAgent(settings).run(
-            doc_text, output, style=style, verify_mode=settings.verify_mode
+            doc_text, output, style=style, verify_mode=settings.verify_mode,
+            action=f"run 模式（文档 {document}）",
         )
     except Exception as e:
         print(f"运行失败：{e}", file=sys.stderr)

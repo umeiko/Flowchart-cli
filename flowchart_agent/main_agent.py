@@ -122,6 +122,12 @@ class MainAgent:
         history_text = user_input
         if images:
             history_text += "\n[附带图片：" + "、".join(str(p) for p in images) + "]"
+        logger.info(
+            "[chat] 用户输入（%d 字符%s）：%s",
+            len(user_input),
+            f"，附带 {len(images)} 张图片" if images else "",
+            history_text[:200].replace("\n", " "),
+        )
         self._messages.append({"role": "user", "content": history_text})
         override = None
         if images and self._vision:
@@ -140,15 +146,21 @@ class MainAgent:
                 msg = self._llm.chat_with_tools(messages, self._tools)
             if not msg.tool_calls:
                 self._messages.append({"role": "assistant", "content": msg.content or ""})
+                logger.info("[chat] 助手回复（%d 字符）", len(msg.content or ""))
                 return msg.content or ""
 
             self._messages.append(self._assistant_message_dict(msg))
             for call in msg.tool_calls:
+                args_preview = call.function.arguments[:200].replace("\n", " ")
+                logger.info("[tool] 调用 %s(%s)", call.function.name, args_preview)
                 if self._on_tool_call:
                     self._on_tool_call(call.function.name, call.function.arguments)
                 result = self._execute(call.function.name, call.function.arguments)
-                logger.info("[tool] %s(%s) -> %s", call.function.name,
-                            call.function.arguments, result[:120].replace("\n", " "))
+                logger.info(
+                    "[tool] %s 完成（结果 %d 字符）：%s",
+                    call.function.name, len(result),
+                    result[:150].replace("\n", " "),
+                )
                 self._messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": result}
                 )

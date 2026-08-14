@@ -185,7 +185,7 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 ## 5. 非功能需求
 
 - **依赖最小化**：Python 侧仅 `openai` + `python-dotenv`；渲染依赖系统安装的 `mmdc`（`npm i -g @mermaid-js/mermaid-cli`）。
-- **可观测性**：每轮打印阶段日志（生成/渲染/验证结果），同时写入 `output/run.log`；每轮中间产物（mmd/图片）与模型原始输出（`round_<n>_generate_raw.txt` / `round_<n>_verify_raw.txt`）落盘，可复盘分步生成过程。
+- **可观测性**：每次生成/修改的完整过程写入 `output/v<n>/run.log`（run 模式为 `output/run.log`）——任务上下文（触发动作、检视模式、风格、背景等配置）、每轮生成/渲染/验证结果、每次 LLM 请求（模型、流式与否、消息数、耗时、输出规模）与 mmdc 渲染命令；chat 模式另有会话级 `output/chat.log` 记录全部用户输入与工具调用（含参数与结果摘要）。每轮中间产物（mmd/图片）与模型原始输出（`round_<n>_generate_raw.txt` / `round_<n>_verify_raw.txt`）落盘，可复盘分步生成过程。
 - **可测试性**：渲染、提取等纯逻辑模块可单测；LLM 调用集中在 client 层便于 mock。
 - **失败可读**：最终失败时给出人类可读的诊断（哪一步卡住、模型最后的批评意见）。
 

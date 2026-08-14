@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,39 @@ from ..config import ModelConfig
 from ..images import image_data_url
 
 logger = logging.getLogger(__name__)
+
+
+def _log_request(stream: bool, **kwargs) -> None:
+    """请求发出前的统一日志：模型、流式与否、消息规模、工具数、是否带图。"""
+    messages = kwargs.get("messages") or []
+    n_images = sum(
+        1
+        for m in messages
+        if isinstance(m.get("content"), list)
+        for part in m["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+    tools = kwargs.get("tools") or []
+    logger.info(
+        "[llm] 请求 model=%s 流式=%s 消息数=%d%s%s",
+        kwargs.get("model"),
+        stream,
+        len(messages),
+        f" 工具数={len(tools)}" if tools else "",
+        f" 图片数={n_images}" if n_images else "",
+    )
+
+
+def _log_response(resp, t0: float) -> None:
+    """响应收到后的统一日志：耗时、输出规模、工具调用数。"""
+    msg = resp.choices[0].message
+    n_calls = len(getattr(msg, "tool_calls", None) or [])
+    logger.info(
+        "[llm] 响应 耗时=%.1fs 输出=%d字符%s",
+        time.monotonic() - t0,
+        len(msg.content or ""),
+        f" tool_calls={n_calls}" if n_calls else "",
+    )
 
 
 def _collect_stream(chunks, on_delta=None) -> SimpleNamespace:
@@ -79,9 +113,13 @@ class LLMClient:
         个别网关在服务端默认流式、且无视 stream=false 时，SDK 会返回一个
         chunk 迭代器而非 ChatCompletion；此处兜底收流拼接，调用方无感。
         """
+        _log_request(stream=False, **kwargs)
+        t0 = time.monotonic()
         resp = self._client.chat.completions.create(stream=False, **kwargs)
         if not hasattr(resp, "choices"):  # 实际返回了流式迭代器
-            return _collect_stream(resp)
+            logger.warning("服务端无视 stream=false 返回了流式响应，已自动收流拼接")
+            resp = _collect_stream(resp)
+        _log_response(resp, t0)
         return resp
 
     def _stream_or_fallback(self, on_delta=None, **kwargs):
@@ -98,9 +136,13 @@ class LLMClient:
             emitted = True
             on_delta(text)
 
+        _log_request(stream=True, **kwargs)
+        t0 = time.monotonic()
         try:
             stream = self._client.chat.completions.create(stream=True, **kwargs)
-            return _collect_stream(stream, on_delta=_track if on_delta else None)
+            resp = _collect_stream(stream, on_delta=_track if on_delta else None)
+            _log_response(resp, t0)
+            return resp
         except Exception as e:
             logger.warning("流式请求失败，退回非流式：%s", e)
             resp = self._completion(**kwargs)

@@ -15,6 +15,15 @@ from . import prompts
 logger = logging.getLogger(__name__)
 
 
+def _file_size(path: Path) -> str:
+    """文件大小的可读形式（run.log 用）。"""
+    try:
+        kb = path.stat().st_size / 1024
+    except OSError:
+        return "大小未知"
+    return f"{kb:.0f} KB" if kb >= 1 else f"{path.stat().st_size} B"
+
+
 @dataclass
 class RoundRecord:
     round_no: int
@@ -55,6 +64,7 @@ class FlowchartAgent:
         on_delta=None,
         verify_mode: str = "full",
         on_round_start=None,
+        action: str = "",
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -68,6 +78,8 @@ class FlowchartAgent:
         verify_mode：视觉检视强度，full=完整检视（排版+内容语义），
         layout=仅基础图形检视（视觉模型识字能力弱时用，防止误判死循环）。
         on_round_start：每轮开始时回调（界面层清空上一轮的流式显示）。
+        action：触发本次运行的动作描述（如 create_diagram/modify_diagram
+        及其参数摘要），仅用于 run.log 记录任务上下文。
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +101,29 @@ class FlowchartAgent:
         )
 
         try:
-            logger.info("任务开始：输出目录 %s", output_dir)
+            logger.info("任务开始：%s", action or "生成流程图")
+            logger.info(
+                "配置：模式=%s 检视=%s 风格=%s 背景=%s 最大轮次=%d "
+                "输出格式=%s 缩放=%s 宽度=%s 需求文档=%d字符",
+                "修订" if initial_code else "新建",
+                verify_mode,
+                style.name if style else "无",
+                bg,
+                self._settings.max_rounds,
+                self._settings.output_format,
+                self._settings.render_scale,
+                self._settings.render_width,
+                len(document),
+            )
+            if initial_feedback:
+                logger.info("修改意见：%s", initial_feedback[:200])
+            if reference_image:
+                logger.info(
+                    "参考图片：%s%s",
+                    reference_image,
+                    "" if first_round_image else "（主模型未开启图像输入，仅作记录）",
+                )
+            logger.info("输出目录：%s", output_dir)
             for round_no in range(1, self._settings.max_rounds + 1):
                 logger.info("=== 第 %d/%d 轮 ===", round_no, self._settings.max_rounds)
                 if on_round_start:
@@ -106,7 +140,8 @@ class FlowchartAgent:
                 record = RoundRecord(round_no=round_no, mermaid_code=code, render_ok=False)
                 result.rounds.append(record)
                 logger.info(
-                    "第 %d 轮：生成完成（原始输出见 %s）", round_no, raw_path.name
+                    "第 %d 轮：生成完成（原始输出 %d 字符，提取到 Mermaid 代码 %d 字符，见 %s）",
+                    round_no, len(raw), len(code), raw_path.name,
                 )
                 if not code:
                     feedback = "你的输出中没有可识别的 Mermaid 代码，请只输出 ```mermaid 代码块。"
@@ -132,7 +167,10 @@ class FlowchartAgent:
                     record.feedback = render.error
                     logger.warning("第 %d 轮：渲染失败 -> %s", round_no, render.error[:200])
                     continue
-                logger.info("第 %d 轮：渲染成功 -> %s", round_no, render.image_path)
+                logger.info(
+                    "第 %d 轮：渲染成功 -> %s（%s）",
+                    round_no, render.image_path, _file_size(render.image_path),
+                )
 
                 # 2.5 顺便出一份 SVG（矢量图便于查看与二次编辑；失败不影响主流程）。
                 # width=auto 的 PNG 渲染已探测出 SVG，直接复用，不重复渲染。
@@ -146,6 +184,9 @@ class FlowchartAgent:
                         )
                         if svg.ok:
                             record.svg_path = svg.image_path
+                            logger.info(
+                                "第 %d 轮：SVG 产物 -> %s", round_no, svg.image_path
+                            )
                         else:
                             logger.warning("第 %d 轮：SVG 渲染失败（不影响主流程）-> %s",
                                            round_no, svg.error[:200])
@@ -238,7 +279,8 @@ class FlowchartAgent:
                 logger.warning("未配置视觉模型（VISION_MODEL_*），检视降级为 code 模式")
             mode = "code"
         if mode == "code":
-            logger.info("检视模式：code（文本模型审查 Mermaid 源码）")
+            logger.info("检视模式：code（文本模型 %s 审查 Mermaid 源码）",
+                        self._text_llm.model_name)
             reply = self._text_llm.chat(
                 [
                     {
@@ -252,11 +294,16 @@ class FlowchartAgent:
         else:
             if mode == "layout":
                 prompt = prompts.VERIFY_LAYOUT_PROMPT
-                logger.info("检视模式：layout（仅基础图形检视）")
+                logger.info("检视模式：layout（视觉模型 %s 仅做基础图形检视）",
+                            self._vision_llm.model_name)
             else:
                 prompt = prompts.VERIFY_PROMPT.format(document=document)
+                logger.info("检视模式：full（视觉模型 %s 完整检视）",
+                            self._vision_llm.model_name)
             reply = self._vision_llm.chat_with_image(prompt, image_path).strip()
-        if reply.upper().startswith("PASS"):
+        verdict = "PASS" if reply.upper().startswith("PASS") else "FAIL"
+        logger.info("检视结论：%s（回复 %d 字符）", verdict, len(reply))
+        if verdict == "PASS":
             return True, "", reply
         # FAIL：去掉首行标志，保留问题列表
         lines = [l for l in reply.splitlines() if l.strip() and not l.strip().upper() == "FAIL"]

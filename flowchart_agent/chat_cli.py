@@ -78,6 +78,23 @@ _HELP = """\
 
 
 def run_chat(settings: Settings, output_dir: Path) -> int:
+    # 会话级日志：整个会话的用户输入、工具调用、LLM 请求都记入 output/chat.log；
+    # 每次生成/修改的详细过程另见 output/v<n>/run.log
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chat_log = logging.FileHandler(output_dir / "chat.log", encoding="utf-8")
+    chat_log.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    )
+    logging.getLogger("flowchart_agent").addHandler(chat_log)
+    logger.info("chat 会话开始：产物目录 %s", output_dir)
+    try:
+        return _chat_loop(settings, output_dir)
+    finally:
+        logging.getLogger("flowchart_agent").removeHandler(chat_log)
+        chat_log.close()
+
+
+def _chat_loop(settings: Settings, output_dir: Path) -> int:
     session = DiagramSession(settings, output_dir)
     display = _StreamDisplay(console)
     session.on_delta = display.show_generation  # 生成循环的 Mermaid 原文流

@@ -118,8 +118,10 @@ def _run_mmdc(
     width: str | None = None,
 ) -> str | None:
     """执行一次 mmdc 渲染。返回 None 表示成功，否则返回错误文本。"""
+    cmd = _mmdc_command(mmd_path, image_path, background, chrome_path, scale, fmt, width)
+    logger.debug("[render] 执行命令：%s", " ".join(cmd))
     proc = subprocess.run(
-        _mmdc_command(mmd_path, image_path, background, chrome_path, scale, fmt, width),
+        cmd,
         capture_output=True,
         text=True,
         timeout=60,
