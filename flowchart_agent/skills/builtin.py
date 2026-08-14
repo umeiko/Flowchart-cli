@@ -1,4 +1,4 @@
-"""内置 Skill：文件读取/查找、读图、流程图创建/修改/查看。"""
+"""内置 Skill：文件读取/查找、读图/OCR、工作文档、流程图创建/修改/查看。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,9 @@ import difflib
 from pathlib import Path
 from typing import Protocol
 
+from ..images import validate_image
+from ..llm import LLMClient
+from ..prompts import OCR_PROMPT
 from ..session import DiagramSession
 from .base import Skill
 
@@ -60,8 +63,27 @@ def find_files(keyword: str, directory: str = ".") -> str:
     return "找到以下文件：\n" + "\n".join(matches)
 
 
-def build_skills(session: DiagramSession, image_queue: ImageQueue) -> list[Skill]:
-    return [
+def _make_ocr_handler(llm: LLMClient):
+    """ocr_image 工具的 handler：用多模态验证模型从图片提取文字。"""
+
+    def ocr_image(path: str) -> str:
+        try:
+            p = validate_image(path)
+        except ValueError as e:
+            return f"错误：{e}"
+        return llm.chat_with_image(OCR_PROMPT, p)
+
+    return ocr_image
+
+
+def build_skills(
+    session: DiagramSession,
+    image_queue: ImageQueue,
+    ocr_llm: LLMClient | None = None,
+) -> list[Skill]:
+    """构建主 Agent 的工具表。ocr_llm 不为 None 时注册 ocr_image
+    （主模型无视觉能力时，用多模态验证模型做图片文字提取）。"""
+    skills = [
         Skill(
             name="read_document",
             description="读取本地需求文档（.txt/.md 等 UTF-8 文本文件），返回全文内容。",
@@ -170,19 +192,20 @@ def build_skills(session: DiagramSession, image_queue: ImageQueue) -> list[Skill
         Skill(
             name="set_verification",
             description=(
-                "调整视觉检视强度（作用于后续生成与修改）。"
+                "调整检视强度（作用于后续生成与修改）。"
                 "full=完整检视：排版结构 + 内容与逻辑核对；"
                 "layout=仅基础图形检视：只查文字排版错误、连线混乱、方框遮挡，"
-                "不逐字核对内容。当视觉模型文字识别能力弱、反复因读错字导致"
-                "验证不通过时，应降为 layout。"
+                "不逐字核对内容，视觉模型识字能力弱时用；"
+                "code=代码检视：不看渲染图，文本模型直接审查 Mermaid 源码，"
+                "完全没有视觉模型时的兜底（查不了排版问题）。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": ["full", "layout"],
-                        "description": "检视强度：full 或 layout",
+                        "enum": ["full", "layout", "code"],
+                        "description": "检视强度：full、layout 或 code",
                     },
                 },
                 "required": ["mode"],
@@ -291,4 +314,52 @@ def build_skills(session: DiagramSession, image_queue: ImageQueue) -> list[Skill
                 else "当前还没有流程图。"
             ),
         ),
+        Skill(
+            name="read_working_doc",
+            description=(
+                "读取工作文档：整合多份素材（文档/图片）信息与初步生成方案的"
+                "中间产物（markdown）。处理多素材需求前先读它，避免遗漏。"
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=session.read_working_doc,
+        ),
+        Skill(
+            name="write_working_doc",
+            description=(
+                "写入或修改工作文档（整体覆盖，先 read_working_doc 再改即可局部修订）。"
+                "用于把多份素材的内容与初步生成方案整合成一份 markdown，"
+                "而不是全部堆在自己的对话上下文里。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "工作文档的完整 markdown 内容",
+                    },
+                },
+                "required": ["content"],
+            },
+            handler=session.write_working_doc,
+        ),
     ]
+    if ocr_llm is not None:
+        skills.append(
+            Skill(
+                name="ocr_image",
+                description=(
+                    "从图片中提取文字内容（OCR，由多模态验证模型完成）。"
+                    "素材是图片（扫描件、截图、手绘草图、已有图表照片）时使用；"
+                    "是图表时还会附带连接关系的文字描述。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "图片文件路径"},
+                    },
+                    "required": ["path"],
+                },
+                handler=_make_ocr_handler(ocr_llm),
+            )
+        )
+    return skills

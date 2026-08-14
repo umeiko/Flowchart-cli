@@ -38,7 +38,10 @@ class FlowchartAgent:
     def __init__(self, settings: Settings):
         self._settings = settings
         self._text_llm = LLMClient(settings.text_model)
-        self._vision_llm = LLMClient(settings.vision_model)
+        # 视觉模型可选：未配置时视觉检视降级为代码检视（见 _verify）
+        self._vision_llm = (
+            LLMClient(settings.vision_model) if settings.vision_model else None
+        )
 
     def run(
         self,
@@ -131,21 +134,25 @@ class FlowchartAgent:
                     continue
                 logger.info("第 %d 轮：渲染成功 -> %s", round_no, render.image_path)
 
-                # 2.5 顺便出一份 SVG（矢量图便于查看与二次编辑；失败不影响主流程）
+                # 2.5 顺便出一份 SVG（矢量图便于查看与二次编辑；失败不影响主流程）。
+                # width=auto 的 PNG 渲染已探测出 SVG，直接复用，不重复渲染。
                 if self._settings.output_format != "svg":
-                    svg = render_mermaid(
-                        styled, output_dir, stem=f"round_{round_no}", fmt="svg",
-                        background=bg, chrome_path=self._settings.chrome_path,
-                    )
-                    if svg.ok:
-                        record.svg_path = svg.image_path
+                    if render.svg_path:
+                        record.svg_path = render.svg_path
                     else:
-                        logger.warning("第 %d 轮：SVG 渲染失败（不影响主流程）-> %s",
-                                       round_no, svg.error[:200])
+                        svg = render_mermaid(
+                            styled, output_dir, stem=f"round_{round_no}", fmt="svg",
+                            background=bg, chrome_path=self._settings.chrome_path,
+                        )
+                        if svg.ok:
+                            record.svg_path = svg.image_path
+                        else:
+                            logger.warning("第 %d 轮：SVG 渲染失败（不影响主流程）-> %s",
+                                           round_no, svg.error[:200])
 
-                # 3. 多模态视觉验证
+                # 3. 视觉验证（code 模式 / 未配置视觉模型时审查源码）
                 passed, critique, raw_reply = self._verify(
-                    document, render.image_path, verify_mode
+                    document, render.image_path, verify_mode, code=styled
                 )
                 raw_path = output_dir / f"round_{round_no}_verify_raw.txt"
                 raw_path.write_text(raw_reply, encoding="utf-8")
@@ -217,19 +224,38 @@ class FlowchartAgent:
         return extract_mermaid(raw), raw
 
     def _verify(
-        self, document: str, image_path: Path, mode: str = "full"
+        self, document: str, image_path: Path, mode: str = "full", code: str = ""
     ) -> tuple[bool, str, str]:
         """返回 (是否通过, 问题列表, 模型原始回复)。
 
-        mode=layout 时只做基础图形检视（排版/遮挡/连线），prompt 不带文档，
-        避免视觉模型因文字识别错误反复误判；mode=full 额外核对内容与逻辑。
+        mode=layout 只做基础图形检视（排版/遮挡/连线），prompt 不带文档，
+        避免视觉模型因文字识别错误反复误判；mode=full 额外核对内容与逻辑；
+        mode=code 或视觉模型未配置时，退回文本模型直接审查 Mermaid 源码
+        （最兜底，查不了排版问题）。
         """
-        if mode == "layout":
-            prompt = prompts.VERIFY_LAYOUT_PROMPT
-            logger.info("视觉检视模式：layout（仅基础图形检视）")
+        if self._vision_llm is None:
+            if mode != "code":
+                logger.warning("未配置视觉模型（VISION_MODEL_*），检视降级为 code 模式")
+            mode = "code"
+        if mode == "code":
+            logger.info("检视模式：code（文本模型审查 Mermaid 源码）")
+            reply = self._text_llm.chat(
+                [
+                    {
+                        "role": "user",
+                        "content": prompts.VERIFY_CODE_PROMPT.format(
+                            document=document, code=code
+                        ),
+                    }
+                ]
+            ).strip()
         else:
-            prompt = prompts.VERIFY_PROMPT.format(document=document)
-        reply = self._vision_llm.chat_with_image(prompt, image_path).strip()
+            if mode == "layout":
+                prompt = prompts.VERIFY_LAYOUT_PROMPT
+                logger.info("检视模式：layout（仅基础图形检视）")
+            else:
+                prompt = prompts.VERIFY_PROMPT.format(document=document)
+            reply = self._vision_llm.chat_with_image(prompt, image_path).strip()
         if reply.upper().startswith("PASS"):
             return True, "", reply
         # FAIL：去掉首行标志，保留问题列表

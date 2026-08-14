@@ -131,10 +131,11 @@ Skill 的 `parameters` 采用 JSON Schema，与 MCP 工具的 `inputSchema` 同�
     视觉模型识字能力弱（如 qwen3-30B 级别）时避免读错字导致的验证死循环；
   - **完整检视（full，默认）**：在 layout 之上叠加内容与逻辑核对——节点完整性、
     连接与方向、分支逻辑、文字与文档语义一致性（prompt 携带原始文档）。
-- PNG 渲染默认 2 倍缩放（`RENDER_SCALE`，mmdc `-s`）+ 4096 视口宽度
-  （`RENDER_WIDTH`，mmdc `-w`）：mermaid 会把图整体压缩进视口宽度（mmdc 默认 800），
-  宽图文字被压扁导致检视误判；调大视口后按自然尺寸渲染，小图不留白。
-  SVG 为矢量图不受影响。
+- PNG 渲染默认 2 倍缩放（`RENDER_SCALE`，mmdc `-s`）；视口宽度默认 auto
+  （`RENDER_WIDTH`）：先用默认视口渲一份 SVG 探测图的自然宽度，再按
+  min(自然宽度, 4096) 渲染 PNG——mermaid 会把图整体压缩进视口宽度（mmdc 默认
+  800），宽流程图被压扁、甘特图等自适应视口图型又会被大视口拉宽，auto 让两类
+  都按自然比例渲染；探测出的 SVG 直接留作当轮产物。SVG 为矢量图不受影响。
 - FAIL 时将问题列表反馈给文本模型修复，回到 FR-2。
 
 ### FR-4 循环控制
@@ -157,6 +158,14 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 - 交互式 REPL：用户口述需求或给出文档路径，主 Agent 通过 function calling 调度 Skill 完成。
 - 路径有误时主 Agent 能自我纠正：`read_document` 报错自带相似文件候选，另有 `find_files` 模糊查找 Skill，要求自动重试 2~3 次后才向用户求助。
 - 图像输入（`TEXT_MODEL_VISION=true` 时启用）：用户可在 TUI 拖入图片（显示为彩色芯片，Backspace 整块删除）随消息发给主模型；`read_image` Skill 支持模型主动查看指定路径图片；`create_diagram` 接受 `image_path` 参考图；修改时把当前渲染图一并发给主模型。无视觉能力时 `read_image` 不下发，图片输入给出明确提示。
+- 主模型无视觉能力（`TEXT_MODEL_VISION=false`）时注册 `ocr_image` 工具：
+  用多模态验证模型（VISION_MODEL）从素材图片逐字提取文字，是图表时附带
+  连接关系描述；用户贴图的路径随消息进入对话，由 Agent 自行调用 OCR。
+- 工作文档中间产物（`working_doc.md`，会话输出目录下）：多素材/复杂需求时
+  Agent 先用 read_document / ocr_image 逐份获取内容，`write_working_doc` 整合为
+  markdown（素材要点 + 初步生成方案），再基于它 create_diagram；
+  `read_working_doc` / `write_working_doc` 工具可随时读取与整体改写，
+  避免大量素材原文长期占用对话上下文。
 - 支持对当前流程图的多轮自然语言修改（`modify_diagram` 在已有代码上修订，并重走渲染+视觉验证循环）。
 - 流式状态显示：主 Agent 回复与生成循环的 Mermaid 原文以流式增量实时滚动展示（Live 区域，段落切换时清场，结束后整段擦除）；LLM 客户端优先 stream=True，服务商不支持或流传输失败时自动退回强制非流式重试，界面无感。
 - 每次生成/修改的版本产物保存在 `output/v<n>/`，当前结果固定在 `output/current.*`。

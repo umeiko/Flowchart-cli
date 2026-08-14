@@ -43,17 +43,40 @@ class DiagramSession:
         self.verify_mode = settings.verify_mode
 
     def set_verify_mode(self, mode: str) -> str:
-        """切换视觉检视强度（set_verification 工具的 handler）。"""
+        """切换检视强度（set_verification 工具的 handler）。"""
         mode = mode.strip().lower()
-        if mode not in ("full", "layout"):
-            return f"错误：未知检视强度 {mode!r}，可选：full、layout。"
+        if mode not in ("full", "layout", "code"):
+            return f"错误：未知检视强度 {mode!r}，可选：full、layout、code。"
         self.verify_mode = mode
         if mode == "layout":
             return (
                 "已切换为基础图形检视（layout）：只检查排版、遮挡、连线结构，"
                 "不再逐字核对内容。适用于视觉模型文字识别能力较弱的场景。"
             )
+        if mode == "code":
+            return (
+                "已切换为代码检视（code）：不看渲染图，文本模型直接审查 Mermaid "
+                "源码的内容与逻辑。完全没有视觉模型时的兜底方案；"
+                "排版/遮挡类渲染问题此模式下查不出来。"
+            )
         return "已切换为完整检视（full）：排版结构 + 内容与逻辑核对。"
+
+    @property
+    def working_doc_path(self) -> Path:
+        """工作文档路径：整合素材信息与初步生成方案的中间产物（markdown）。"""
+        return self._output_dir / "working_doc.md"
+
+    def read_working_doc(self) -> str:
+        """read_working_doc 工具的 handler。"""
+        if not self.working_doc_path.is_file():
+            return "（工作文档还没有内容，可用 write_working_doc 创建）"
+        return self.working_doc_path.read_text(encoding="utf-8")
+
+    def write_working_doc(self, content: str) -> str:
+        """write_working_doc 工具的 handler：整体覆盖写入（先读后改即可局部修订）。"""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self.working_doc_path.write_text(content, encoding="utf-8")
+        return f"工作文档已更新（{len(content)} 字符）：{self.working_doc_path}"
 
     def list_skill_packs(self) -> str:
         """列出 skills/ 目录下所有技能包（list_skill_packs 工具的 handler）。"""

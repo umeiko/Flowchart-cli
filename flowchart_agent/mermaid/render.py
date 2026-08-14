@@ -7,17 +7,24 @@ Chromium）做快速语法预检，语法错误在 1 秒内返回，不必等 mm
 from __future__ import annotations
 
 import json
+import logging
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 # scripts/mermaid_parse.mjs 位于项目根目录（本文件上三级）
 _PARSE_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mermaid_parse.mjs"
 
 # 配置 CHROME_PATH 时在输出目录生成的 puppeteer 配置文件名
 _PUPPETEER_CONFIG_NAME = ".puppeteer-config.json"
+
+# width="auto" 时自然宽度的上限：超过则压缩到该值（防止极端宽图撑爆截图纹理上限）
+_AUTO_MAX_WIDTH = 4096
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,8 @@ class RenderResult:
     mmd_path: Path
     image_path: Path | None = None
     error: str = ""
+    # width="auto" 的 PNG 渲染会先出一份 SVG 探测自然宽度，该 SVG 直接留作产物
+    svg_path: Path | None = None
 
 
 class MermaidCliNotFoundError(RuntimeError):
@@ -51,9 +60,13 @@ def render_mermaid(
     Chromium 常不可用），设置后自动生成 puppeteer-config.json 并传 -p。
     scale：PNG 缩放倍数（mmdc -s），大图表分辨率低、文字看不清时提高；
     仅对 PNG 生效（SVG 是矢量图无需缩放）。
-    width：PNG 视口宽度（mmdc -w）。mermaid 会把图整体压缩进视口宽度
-    （mmdc 默认 800），宽图文字被压扁；调大后按自然尺寸渲染，
-    小图不会留白或放大。仅对 PNG 生效。
+    width：PNG 视口宽度（mmdc -w），仅对 PNG 生效：
+    - "auto"（推荐）：先用默认视口渲一份 SVG 探测图的自然宽度，再按
+      min(自然宽度, 4096) 渲染 PNG——自适应视口的图型（甘特图等）按自然
+      比例渲染不被拉宽，超宽流程图不被 mmdc 默认 800 视口压扁，探测出的
+      SVG 同时作为产物保留；
+    - 数字字符串：固定视口宽度（旧行为）；
+    - None：mmdc 默认视口（800）。
     """
     if shutil.which("mmdc") is None:
         raise MermaidCliNotFoundError(
@@ -71,6 +84,40 @@ def render_mermaid(
     if parse_error is not None:
         return RenderResult(ok=False, mmd_path=mmd_path, error=f"[语法预检] {parse_error}")
 
+    svg_path = None
+    resolved_width = width
+    if fmt == "png" and width == "auto":
+        # 探测：默认视口渲 SVG，从 SVG 读出图的自然宽度
+        svg_path = output_dir / f"{stem}.svg"
+        probe_error = _run_mmdc(mmd_path, svg_path, background, chrome_path, fmt="svg")
+        natural = _svg_natural_width(svg_path) if probe_error is None else None
+        if natural is None:
+            resolved_width = None  # 探测失败退回 mmdc 默认视口
+            svg_path = None
+            logger.warning("自然宽度探测失败，按 mmdc 默认视口渲染：%s", probe_error)
+        else:
+            resolved_width = str(min(natural, _AUTO_MAX_WIDTH))
+            logger.info("自然宽度 %dpx，PNG 视口取 %s", natural, resolved_width)
+
+    error = _run_mmdc(
+        mmd_path, image_path, background, chrome_path,
+        scale=scale, fmt=fmt, width=resolved_width,
+    )
+    if error is not None:
+        return RenderResult(ok=False, mmd_path=mmd_path, error=error)
+    return RenderResult(ok=True, mmd_path=mmd_path, image_path=image_path, svg_path=svg_path)
+
+
+def _run_mmdc(
+    mmd_path: Path,
+    image_path: Path,
+    background: str,
+    chrome_path: str | None,
+    scale: str | None = None,
+    fmt: str = "png",
+    width: str | None = None,
+) -> str | None:
+    """执行一次 mmdc 渲染。返回 None 表示成功，否则返回错误文本。"""
     proc = subprocess.run(
         _mmdc_command(mmd_path, image_path, background, chrome_path, scale, fmt, width),
         capture_output=True,
@@ -78,9 +125,25 @@ def render_mermaid(
         timeout=60,
     )
     if proc.returncode != 0 or not image_path.exists():
-        error = (proc.stderr or proc.stdout or "mmdc 渲染失败且无输出").strip()
-        return RenderResult(ok=False, mmd_path=mmd_path, error=error)
-    return RenderResult(ok=True, mmd_path=mmd_path, image_path=image_path)
+        return (proc.stderr or proc.stdout or "mmdc 渲染失败且无输出").strip()
+    return None
+
+
+def _svg_natural_width(svg_path: Path) -> int | None:
+    """从 SVG 头部解析图的自然宽度（max-width 样式或 viewBox 第三分量）。"""
+    try:
+        head = svg_path.read_text(encoding="utf-8", errors="ignore")[:2000]
+    except OSError:
+        return None
+    m = re.search(r"max-width:\s*([\d.]+)px", head)
+    if m:
+        return max(1, round(float(m.group(1))))
+    m = re.search(r'viewBox="([^"]+)"', head)
+    if m:
+        parts = m.group(1).split()
+        if len(parts) == 4:
+            return max(1, round(float(parts[2])))
+    return None
 
 
 def _write_puppeteer_config(output_dir: Path, chrome_path: str) -> Path:
@@ -116,7 +179,7 @@ def _mmdc_command(
     if fmt == "png":
         if scale:
             args += ["-s", str(scale)]
-        if width:
+        if width and width != "auto":
             args += ["-w", str(width)]
     if sys.platform == "win32":
         return ["cmd", "/c", *args]

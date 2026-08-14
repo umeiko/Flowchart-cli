@@ -29,7 +29,11 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
 - 用户给出文档路径：先 read_document 读取，再用 create_diagram 以文档内容为需求生成图；
 - 用户直接口述新图需求：直接 create_diagram；若用户提供了参考图片路径，传给 image_path；
 - 用户消息中直接附带了图片内容：结合图片理解需求，再 create_diagram 或 modify_diagram；
-- 用户给出图片路径并希望你查看：read_image；
+- 用户给出图片路径并希望你查看：read_image（无视觉能力时改用 ocr_image 提取文字）；
+- 用户提供多份素材（多份文档/图片）或需求复杂：先用 read_document / ocr_image
+  逐份获取素材内容，write_working_doc 整合成工作文档（markdown：各素材要点 +
+  初步生成方案），再基于工作文档 create_diagram；工作文档可随时 read_working_doc
+  查看、write_working_doc 修改——不要把大量素材原文长期堆在对话上下文里；
 - 用户对已有图提出修改意见：modify_diagram（不要重新 create）；
 - 用户只想调整当前图的风格/配色/主题、明确不改内容（"换成深色"、
   "按这个风格文档调整"）：restyle_diagram（不要用 modify_diagram，
@@ -38,9 +42,9 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
   目录中的风格模板，选最匹配的一个（create_diagram 的 style 参数或 set_style 切换）；
   现有模板都不匹配、或用户明确要求定制新风格时，用 create_style 生成新风格插件
   （成功后自动切换为当前风格）；都不需要时按默认风格处理；
-- 用户要求调整检视/验证强度（如"别核对内容了"）：set_verification；
-  视觉验证反复因文字识别错误（看不清、读错字）不通过时，也可主动降为 layout
-  并告知用户；
+- 用户要求调整检视/验证强度（如"别核对内容了"、"不用看图验证"）：set_verification；
+  视觉验证反复因文字识别错误（看不清、读错字）不通过时，也可主动降为 layout；
+  用户表示没有视觉模型可用时降为 code（文本模型审查源码），并告知用户；
 - 用户想看当前图的代码或位置：get_current_diagram；
 - 遇到超出你既有能力的专业任务（特定导出格式、行业图表规范、第三方工具对接等），
   或用户提到某个技能/技能包：先 list_skill_packs 发现 skills/ 目录中的技能包，
@@ -57,15 +61,10 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
 
 _VISION_ON = "\n\n当前主模型图像输入：已开启，可以处理用户贴入的图片和 read_image 读取的图片。"
 _VISION_OFF = (
-    "\n\n当前主模型图像输入：未开启（TEXT_MODEL_VISION=false）。"
-    "工具列表中没有 read_image；若用户提出图片相关需求，"
-    "请提示用户在 .env 中把 TEXT_MODEL_VISION 设为 true 并使用支持图片输入的模型。"
-)
-
-_NO_VISION_REPLY = (
-    "你附带了图片，但当前文本模型未开启多模态能力"
-    "（TEXT_MODEL_VISION=false）。请在 .env 中把它设为 true，"
-    "并确保 TEXT_MODEL_NAME 是支持图片输入的模型。"
+    "\n\n当前主模型图像输入：未开启（TEXT_MODEL_VISION=false），你不能直接看图："
+    "- 用户贴图时消息中只带图片路径，需要图片内容时用 ocr_image 提取文字；"
+    "- 工具列表中没有 read_image；若用户需要看图理解版式/配色的能力，"
+    "提示用户在 .env 中把 TEXT_MODEL_VISION 设为 true 并使用支持图片输入的模型。"
 )
 
 
@@ -102,7 +101,13 @@ class MainAgent:
         self._llm = LLMClient(settings.text_model)
         self._vision = settings.text_model_vision
         self._pending = _PendingImages(self._vision)
-        skills = build_skills(session, self._pending)
+        # 主模型无视觉能力且配置了视觉模型时，用视觉模型提供 OCR 工具作为替代
+        ocr_llm = (
+            None
+            if self._vision or settings.vision_model is None
+            else LLMClient(settings.vision_model)
+        )
+        skills = build_skills(session, self._pending, ocr_llm=ocr_llm)
         if not self._vision:  # 无视觉能力时不下发 read_image，避免模型误调
             skills = [s for s in skills if s.name != "read_image"]
         self._skills = {s.name: s for s in skills}
@@ -113,15 +118,14 @@ class MainAgent:
         self._on_delta = on_delta  # 界面层用来流式显示模型输出
 
     def chat(self, user_input: str, images: list[Path] | None = None) -> str:
-        if images and not self._vision:
-            return _NO_VISION_REPLY
-
-        # 历史中只保留文本（含图片路径），base64 只在本次调用出现一次
+        # 主模型无视觉能力时，图片路径仍随消息进入对话，由 ocr_image 提取文字
         history_text = user_input
         if images:
             history_text += "\n[附带图片：" + "、".join(str(p) for p in images) + "]"
         self._messages.append({"role": "user", "content": history_text})
-        override = self._multimodal_message(user_input, images) if images else None
+        override = None
+        if images and self._vision:
+            override = self._multimodal_message(user_input, images)
 
         for _ in range(MAX_TOOL_ITERATIONS):
             messages = self._messages
