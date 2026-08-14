@@ -1,0 +1,20 @@
+设备搜索流程文字文档
+一、流程概述
+Start → Devices to be searched? → Start of inquiry → Setting communication range → Performing inquiry → Transmission of message → Response message received? → Storing device information → End
+
+二、详细步骤说明
+Start（起止节点）：设备搜索流程启动
+Devices to be searched?（判断节点）：判断是否存在需要搜索的设备；若否则直接结束流程，若是则启动查询
+Start of inquiry（处理节点）：开始设备查询
+Setting communication range（处理节点）：设置通信范围
+Performing inquiry（处理节点）：执行设备查询
+Transmission of message（处理节点）：发送消息
+Response message received?（判断节点）：判断是否收到响应消息；若是则存储设备信息，若否则进入暂停/超时判断
+Storing device information（处理节点）：存储搜索到的设备信息，之后返回 Setting communication range 继续查询
+Suspension instructed?（判断节点）：未收到响应时，判断是否收到暂停指令；若是则结束流程
+Fixed time passed?（判断节点）：未收到暂停指令时，判断固定时间是否已过；若是则结束流程
+Frequency hopping（处理节点）：固定时间未过时，执行跳频操作，之后返回 Setting communication range 继续查询
+End（起止节点）：设备搜索流程结束
+
+三、流程说明
+本流程为带多重分支与循环的设备搜索/查询流程。流程首先判断是否需要搜索设备，随后进入查询循环；根据是否收到响应、是否收到暂停指令、固定时间是否已过等条件进行分支处理，未满足结束条件时通过循环或跳频继续查询。

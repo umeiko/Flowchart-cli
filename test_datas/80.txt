@@ -1,0 +1,23 @@
+IATA Biological Shipment Category（IATA 生物运输分类）流程文字文档
+一、流程概述
+开始 → Are you shipping infectious substances? → Is capable of causing permanent disability, life-threatening or fatal disease? / Are there pathogens present in your sample? → Category A / Category B / Exempt Human/Animal Patient Specimen / Biological Product / Genetically Modified Organism / Regulated shipment
+
+二、详细步骤说明
+开始（起止节点）：IATA 生物运输分类流程启动
+Are you shipping infectious substances?（判断节点）：判断是否运输传染性物质
+Is capable of causing permanent disability, life-threatening or fatal disease?（判断节点）：判断是否会导致永久伤残、危及生命或致命疾病
+This is a Category A shipment（起止节点）：属于 A 类运输
+It does not meet the criteria for Category A?（判断节点）：判断是否不满足 A 类标准
+This is a Category B Shipment（起止节点）：属于 B 类运输
+Are there pathogens present in your sample?（判断节点）：判断样品中是否存在病原体
+Proper Shipper No. 6.2 infectious substance（处理节点）：使用正确的 6.2 类传染性物质托运
+Is this a patient specimen?（判断节点）：判断是否为病人标本
+This is an Exempt Human/Animal Patient Specimen Shipment（起止节点）：属于豁免的人/动物病人标本运输
+Is this a biological product like an antibody, protein, nucleic acid, etc.?（判断节点）：判断是否为生物制品（抗体、蛋白质、核酸等）
+This is a Biological Product Shipment（起止节点）：属于生物制品运输
+Are you shipping a genetically modified organism domestically?（判断节点）：判断是否在国内运输转基因生物
+This is Genetically Modified Organism Shipment（起止节点）：属于转基因生物运输
+Stop! This is a regulated shipment（起止节点）：停止！属于受管制运输，需联系技术转让办公室和 EHS
+
+三、流程说明
+本流程为 IATA 生物运输类别判定的决策树流程。从是否运输传染性物质出发，经过多个判断节点，最终确定货物属于 Category A、Category B、豁免病人标本、生物制品、转基因生物，或受管制运输。每个叶子节点对应一种明确的运输分类结论。

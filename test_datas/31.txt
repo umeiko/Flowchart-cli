@@ -1,0 +1,22 @@
+信用审批流程文字文档
+一、流程概述
+开始 → 销售电话 → 客户购买意向判断 → 填写信用申请表 → 提交订单 → 信用审查 → 审查通过判断 → 复核应收账款 → 发放信用 → 生成信用发放报告 → 完成
+
+二、详细步骤说明
+开始（起止节点）：流程启动，位于 Sales 泳道
+Make Sales Call（处理节点）：销售人员拨打销售电话
+Buy Product?（判断节点）：客户判断是否购买产品；若是，填写信用申请表；若否，流程在销售侧结束
+Credit Form（处理节点）：客户填写信用申请表
+Submit Order（处理节点）：销售人员提交订单
+Order Form（处理节点）：生成订单表单，传递至 Credit Department 泳道
+Credit Criteria（处理节点）：管理层制定信用标准，传递至 Credit Department
+Perform Credit Check（处理节点）：信用部门执行信用检查
+Checking Passed?（判断节点）：信用部门判断初次检查是否通过；若否，进入应收账款复核；若是，直接发放信用
+Review Accounts Receivable Balance（处理节点）：复核客户应收账款余额
+Checking Passed?（判断节点）：复核后再次判断检查是否通过；若是，进入发放信用环节
+Issue Credit（处理节点）：信用部门批准并发放信用
+Credit Issued Report（处理节点）：生成信用发放报告，分别传递至 Management 和 Sales 泳道
+完成（起止节点）：信用审批流程结束
+
+三、流程说明
+本流程为跨部门的泳道流程图，涉及 Customer、Sales、Management 和 Credit Department 四个角色。流程包含客户购买意向判断和信用检查判断两个关键分支，初次信用检查未通过时会追加应收账款复核环节，最终发放信用并生成报告。

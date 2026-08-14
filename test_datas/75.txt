@@ -1,0 +1,17 @@
+Sistem Pengukuran Tegangan（电压测量系统）流程文字文档
+一、流程概述
+开始 → Inisialisasi Port → Menunggu Penekanan Tombol Start → Tombol Start = 0? → A → Sampling Tegangan Output Rangkaian → Pengolahan Data Menjadi Nilai Tegangan Puncak → Tampilkan di LCD → 完成
+
+二、详细步骤说明
+开始（起止节点）：流程启动
+Inisialisasi Port（处理节点）：初始化端口
+Menunggu Penekanan Tombol Start（处理节点）：等待开始按钮被按下
+Tombol Start = 0?（判断节点）：判断开始按钮是否等于 0（未按下）
+A（起止节点/连接节点）：表示左半部分流程结束并进入右半部分测量流程的中间节点
+Sampling Tegangan Output Rangkaian（处理节点）：采集电路输出电压
+Pengolahan Data Menjadi Nilai Tegangan Puncak（处理节点）：将数据 processed 为峰值电压
+Tampilkan di LCD（处理节点）：在 LCD 上显示测量结果
+完成（起止节点）：流程结束
+
+三、流程说明
+本流程由左右两部分组成，左侧为启动等待环节，右侧为测量显示环节。流程首先初始化端口并等待用户按下开始按钮；若按钮未按下则循环等待，按下后进入右侧采集、处理并显示电压峰值，最终结束。整体包含一个循环回退的判断分支。

@@ -1,0 +1,21 @@
+Sales Process（销售流程）文字文档
+一、流程概述
+Get intent data → Cold call list (prospecting) → Connect to a prospect → Is prospect qualified decision maker? → Set up a sales pitch and demo → Are there any objections? → Schedule follow up → Is prospect ready to buy? → Negotiate terms → Close deal
+
+二、详细步骤说明
+Get intent data（处理节点）：获取意向数据，作为销售线索来源
+Cold call list (prospecting)（处理节点）：根据意向数据生成外呼名单，进行潜在客户挖掘
+Connect to a prospect（处理节点）：与潜在客户建立联系
+Is prospect qualified decision maker?（判断节点）：判断联系对象是否为合格的决策人；若是则进入销售演示环节，否则判断能否转接
+Can prospect connect you to qualified decision maker?（判断节点）：判断潜在客户能否帮忙转接到合格的决策人；若是则进入销售演示环节，否则记录信息并结束该线索
+Make note in data（处理节点）：在数据中做备注，结束当前线索跟进
+Set up a sales pitch and demo（处理节点）：建立销售话术并进行产品演示
+Are there any objections?（判断节点）：判断客户是否提出异议；若是则处理异议，否则安排后续跟进
+Address questions and concerns（处理节点）：解答客户的疑问与顾虑，处理后再次确认是否仍有异议
+Schedule follow up（处理节点）：安排后续跟进
+Is prospect ready to buy?（判断节点）：判断潜在客户是否准备购买；若是则进入谈判环节，否则返回销售演示/异议处理阶段继续跟进
+Negotiate terms（处理节点）：与客户协商条款
+Close deal（起止节点）：达成交易，销售流程结束
+
+三、流程说明
+本流程为销售流程，包含多处分支判断与循环回退。流程根据客户是否为决策人、是否提出异议、是否准备购买等关键节点进行分支处理，未满足条件时会循环回退或记录终止，最终目标是达成交易。

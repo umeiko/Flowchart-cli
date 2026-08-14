@@ -1,0 +1,24 @@
+Windows Vista 升级决策流程文字文档
+一、流程概述
+开始 → 是否准备好使用 Vista → 正在运行哪个操作系统 → Windows 版本判断 → 是否能运行 Vista / 观看广告判断 → 家用或商用判断 → 谁修电脑判断 → 备份重要文件 → 继续升级 → 完成
+
+二、详细步骤说明
+开始（起止节点）：流程标题为“Windows Vista Upgrade Decision Flowchart”，开始决策是否升级到 Windows Vista
+是否准备好使用 Vista（判断节点）：节点文字为“Are you ready to work with Vista?”；若回答 No，进入“你无需升级”；若回答 Yes，继续下一步
+你无需升级（处理节点）：节点文字为“You needn't to upgrade”，流程终止升级建议
+正在运行哪个操作系统（判断节点）：节点文字为“Which OS are you running?”；若是 Linux、Apple 或其他，返回“你无需升级”
+Windows 版本判断（判断节点）：节点文字为“Which version of Windows?”；若不是 2003/XP/2000，则进入“电脑太旧无法运行 Vista”
+电脑太旧无法运行 Vista（处理节点）：节点文字为“Your computer is so old that you can't run Vista”
+购买预装 Vista 的新电脑（处理节点）：节点文字为“Buy a new computer with Vista already installed”，作为旧电脑的升级建议
+广告判断（判断节点）：节点文字为“Do you place water ads where one guy is a PC and the other is a Mac and they are funny?”；Yes 进入“Yeah, me too.”，No 进入“Yeah, me neither.”
+Yeah, me too. / Yeah, me neither.（处理节点）：两种幽默回答分支，之后汇合进入家用/商用判断
+家用或商用判断（判断节点）：节点文字为“Is the computer used at home or for business?”；Business 分支进入“等待 Service Pack 发布后再升级”，Home 分支进入“谁修电脑”判断
+等待 Service Pack 发布后再升级（处理节点）：节点文字为“Wait for the first Service Pack to be released before upgrading”
+谁修电脑（判断节点）：节点文字为“Who fixes the computer when it breaks?”；Neighbor kid or relative 分支进入“去问他/她该怎么做”，Yourself 分支进入“备份重要文件”
+去问他/她该怎么做（处理节点）：节点文字为“Go ask him/her what you should do”，之后进入“备份重要文件”
+备份重要文件（处理节点）：节点文字为“Backup the important file in your computer”
+继续升级（处理节点）：节点文字为“Go ahead and update”，表示可以执行升级
+完成（起止节点）：整个升级决策流程结束
+
+三、流程说明
+本流程为典型的多分支决策流程图，包含多个判断节点和并行分支，根据用户当前系统、Windows 版本、广告偏好、使用场景以及技术支持来源逐步给出是否升级 Windows Vista 的建议，最终汇合到升级或等待/购买新电脑等结论。

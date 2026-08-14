@@ -1,0 +1,21 @@
+薪资发放流程文字文档
+一、流程概述
+Supervisor：考勤卡 → 人事行动审核 → 工资支票 → 员工
+Payroll Department：考勤/人事资料 → 准备支票并更新记录 → 工资支票/工资登记表
+Cash Disbursements：工资登记表 → 审核授权转账 → 银行付款
+
+二、详细步骤说明
+Time Cards（处理节点）：主管收集员工的考勤卡
+Review and Prepare Personnel Action（处理节点）：主管审核并准备人事行动资料
+Time Cards Personnel Action（处理节点）：将考勤卡和人事行动资料传递至薪资部门
+Prepare Checks and Update Records（处理节点）：薪资部门根据员工记录准备工资支票并更新记录
+Employee Records（处理节点/数据存储）：员工档案记录，用于核对薪资信息
+Paychecks（处理节点）：生成工资支票
+Payroll Register（处理节点）：生成工资登记表
+Review and Authorize Cash Transfer（处理节点）：现金支出部门审核并授权现金转账
+Funds Transfer Check（处理节点）：生成资金转账支票
+Bank（起止节点）：银行完成最终付款，流程结束
+Employees（起止节点）：员工收到工资支票，流程结束
+
+三、流程说明
+本流程为带 Swimlane（泳道）的跨部门薪资发放流程，涉及 Supervisor（主管）、Payroll Department（薪资部门）和 Cash Disbursements（现金支出部门）三个角色。流程主线为：主管提交考勤和人事资料，薪资部门准备支票并更新员工记录，现金支出部门审核授权后将资金转账至银行。整体为线性协作流程，各角色按顺序完成各自任务。

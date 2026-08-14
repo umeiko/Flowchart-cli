@@ -1,0 +1,21 @@
+攀岩训练诊断流程文字文档
+一、流程概述
+能否走到岩壁？ → 能否抓握住所有手点？ → 能否在点之间移动？ → 能否在无休息情况下攀爬区段？ → 是否害怕？ → 能否每天尝试多次？ → 推荐对应训练项目
+
+二、详细步骤说明
+CAN YOU WALK TO THE CLIFF?（判断节点）：判断能否步行到达岩壁；若否，推荐 1；若是，继续下一判断
+1 TRAIN YOUR CARDIO SYSTEM（处理节点）：训练心肺系统
+CAN YOU HOLD ALL HOLDS ON YOUR PROJECT?（判断节点）：判断能否抓握住项目上的所有手点；若否，推荐 2；若是，继续下一判断
+2 GET ON THE HANGBOARD（处理节点）：进行指板训练
+CAN YOU MOVE BETWEEN THEM?（判断节点）：判断能否在手点之间移动；若否，推荐 3；若是，继续下一判断
+3 WORK ON LIMIT BOULDERING（处理节点）：进行极限抱石训练
+CAN YOU CLIMB THE SECTIONS BETWEEN RESTS?（判断节点）：判断能否在不休息的情况下攀爬区段；若否，推荐 4；若是，继续下一判断
+4 WORK ON ROUTE-SPECIFIC INTERVALS（处理节点）：进行路线专项间歇训练
+ARE YOU AFRAID?（判断节点）：判断是否在攀爬时感到害怕；若是，推荐 5；若否，继续下一判断
+5 HTFU（处理节点）：克服心理障碍（HTFU，即 Harden The F* Up）
+CAN YOU GIVE IT SEVERAL TRIES PER DAY?（判断节点）：判断能否每天进行多次尝试；若否，推荐 6；若是，推荐 7
+6 TRAIN YOUR CAPACITY（处理节点）：训练耐力容量
+7 START REPOINTING（处理节点）：开始红点挑战（Redpointing）
+
+三、流程说明
+本流程为逐级分支判断的攀岩训练诊断树。从能否到达岩壁这一基础能力开始，逐层评估攀爬者的体能、技术、心理与尝试频率，最终给出 7 种针对性的训练建议之一，呈线性决策树结构，无循环回退。

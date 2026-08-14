@@ -1,0 +1,18 @@
+Accounting Process流程文字文档
+一、流程概述
+ACCOUNTING PROCESS → Recognition of Earning of Each Contents → Recognition of License Holder and Rate of Each Distributing Earning Right → Calculation of Distributing Earning of Each Distributing Earning Right → Collection and Output of Distributing Earning of Each License Holder → Information to License Holder and Trading Process with Bank Terminal → Updating of License Database and License Holder Database → Trading Process with Bank Terminal About Trade of Distributing Earning Right → RETURN
+（会计流程从“ACCOUNTING PROCESS”开始，依次完成收益确认、许可方识别、收益分配计算、收款输出、银行交易信息处理，最终更新数据库并完成交易后返回）
+
+二、详细步骤说明
+ACCOUNTING PROCESS（起止节点）：会计处理流程开始
+Recognition of Earning of Each Contents（处理节点，S311）：确认各项内容的收益
+Recognition of License Holder and Rate of Each Distributing Earning Right（处理节点，S313）：识别许可方及各分配收益权的比例
+Calculation of Distributing Earning of Each Distributing Earning Right（处理节点，S315）：计算各分配收益权的分配收益
+Collection and Output of Distributing Earning of Each License Holder（处理节点，S317）：收集并输出各许可方的分配收益
+Information to License Holder and Trading Process with Bank Terminal（处理节点，S319）：向许可方提供信息，并与银行终端进行交易处理
+Updating of License Database and License Holder Database（判断节点，S321）：判断是否需要更新许可证数据库和许可方数据库
+Trading Process with Bank Terminal About Trade of Distributing Earning Right（处理节点，S323）：若需要更新数据库，则与银行终端进行关于分配收益权交易的处理
+RETURN（起止节点）：流程结束并返回
+
+三、流程说明
+本流程为线性顺序流程，主要按顺序执行收益确认、分配计算、收款输出等会计处理步骤。在末尾包含一个判断节点，根据是否需要更新数据库决定执行额外的银行交易步骤；若不需要更新，则直接返回结束。整体流程结构清晰，步骤之间具有较强的先后依赖关系。

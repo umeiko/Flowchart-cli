@@ -1,0 +1,24 @@
+Margaret Atwood 作品推荐流程文字文档
+一、流程概述
+阅读 Mood 起点 → 体裁偏好选择 → 当代文学/小说或短篇 / 诗歌类型 / 历史题材 / 异世界题材 → 进一步判断 → 推荐对应作品
+
+二、详细步骤说明
+阅读 Mood 起点（起止节点）：用户处于想读 Margaret Atwood 作品的心情，提出"What Atwood should I read?"
+OK: what's your genre poison?（判断节点）：询问用户喜欢的体裁类型，分支为 Contemporary Lit/Fic（当代文学）、Poetical（诗歌）、Historical（历史）、Other-worldly（异世界）
+Novel or short stories?（判断节点）：当代文学分支下，判断用户想读 Novel（小说）还是 Short Stories（短篇小说）
+The Blind Assassin（起止节点）：推荐小说《The Blind Assassin》（盲刺客）
+Dancing Girls（起止节点）：推荐短篇小说集《Dancing Girls》（跳舞女孩）
+Linked poems or collection?（判断节点）：诗歌分支下，判断用户想读 Linked poems（组诗）还是 Collection（诗集）
+Power Politics（起止节点）：推荐诗集《Power Politics》（权力政治）
+The Journals of Susanna Moodie（起止节点）：推荐组诗《The Journals of Susanna Moodie》（苏珊娜·穆迪日记）
+Pick an -ism: femin- or environmental-?（判断节点）：异世界分支下，判断用户偏好 Femin-（女性主义）还是 Environmental-（环保主义）
+The Handmaid's Tale（起止节点）：推荐女性主义作品《The Handmaid's Tale》（使女的故事）
+The Maddadam Trilogy（起止节点）：推荐环保主义作品《The Maddadam Trilogy》，建议从《Oryx and Crake》开始阅读
+Real, mythical or alternate?（判断节点）：历史题材分支下，判断用户偏好 Real（真实）、Mythical（神话）还是 Alternate（架空）
+The Journals of Susanna Moodie（起止节点）：真实但诗歌类，推荐《The Journals of Susanna Moodie》
+Alias Grace（起止节点）：真实但小说类，推荐《Alias Grace》（别名格蕾丝）
+The Penelopiad（起止节点）：神话（小说）类，推荐《The Penelopiad》（珀涅罗珀记）
+Good Bones（起止节点）：神话（短篇）类，推荐《Good Bones》（好骨头）
+
+三、流程说明
+本流程为多级分支判断的推荐决策树。从用户阅读心情出发，通过逐层询问体裁、形式、主题等偏好，最终在多个互斥分支中推荐对应的 Margaret Atwood 作品，无循环回退，呈树状展开。

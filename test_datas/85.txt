@@ -1,0 +1,24 @@
+Quiz Grading Flow流程文字文档
+一、流程概述
+Start Quiz → Pass Required? → Display Passmark / Answer Questions → Submit Quiz → Auto-grade?? → Submit for Grading → Teacher grades quiz → Pass required? → Passed? → Display Results → Reset allowed? → End / Reset Quiz
+（测验评分流程从“Start Quiz”开始，先判断是否需要及格线，然后答题、提交，再判断是否自动评分，最终根据是否通过及是否允许重考决定结束或重置测验）
+
+二、详细步骤说明
+Start Quiz（起止节点）：测验开始
+Pass Required?（判断节点）：判断测验是否设置及格线；若需要，先显示及格线，再进入答题环节
+Display Passmark（处理节点）：向考生显示及格分数线
+Answer Questions（处理节点）：考生回答测验题目
+Submit Quiz（处理节点）：考生提交测验答案
+Auto-grade??（判断节点）：判断测验是否可自动评分；若不能自动评分，则提交给教师评分（图中标注“Can all the questions be auto-graded?”提示该判断核心问题）
+Submit for Grading（处理节点）：将测验提交给教师进行评分
+Teacher grades quiz（处理节点）：教师对测验进行人工评分
+Pass required?（判断节点）：再次判断是否需要及格线（或是否涉及及格判定）
+Passed?（判断节点）：判断考生是否通过测验
+Display "Passed" message, Display Grade, Display Correct/Incorrect answers, Display ALL answer feedback（处理节点）：若通过测验，显示“已通过”消息、成绩、正误答案及全部答题反馈
+Display Passmark and Grade, Display Correct/Incorrect answers, Display ALL answer feedback（处理节点）：若未通过测验，显示及格线、成绩、正误答案及全部答题反馈
+Reset allowed?（判断节点）：判断是否允许重考；若不允许，流程结束
+End（起止节点）：测验评分流程结束
+Reset Quiz（处理节点）：若允许重考，重置测验并返回“Answer Questions”节点重新答题
+
+三、流程说明
+本流程为带多重分支判断和循环回退的复杂流程。流程中多次判断是否设置及格线、是否自动评分、是否通过以及是否允许重考，根据条件结果展示不同的反馈信息或进入不同的处理路径；当允许重考时会形成回到答题环节的循环。整体体现了测验评分与反馈的完整业务逻辑。

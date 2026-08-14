@@ -1,0 +1,16 @@
+Stimmautorisierungsprozess流程文字文档
+一、流程概述
+A → Wortfolge identisch? → Stimmen Stimmmerkmale überein? → Teilnehmer authorisiert für Geschäftsvorgang / Weiteres Referenz-Stimm-Muster geladen? → Nächstes geladenes Referenz-Stimm-Muster heranziehen → Abbruch
+（语音授权流程从连接点A开始，依次核对词序和声纹特征；若匹配则授权参与者办理业务，若不匹配则继续加载并比对下一条参考语音样本，直至无更多样本则中止）
+
+二、详细步骤说明
+A（起止节点/连接点）：流程入口连接点
+Wortfolge identisch?（判断节点，113）：判断输入语音的词序是否与参考样本一致（德文：Wortfolge identisch?）
+Stimmen Stimmmerkmale überein?（判断节点，114）：若词序一致，进一步判断声纹特征是否一致（德文：Stimmen Stimmmerkmale überein?）
+Teilnehmer authorisiert für Geschäftsvorgang（处理节点，118）：若词序和声纹特征均一致，则授权参与者办理业务（德文：Teilnehmer authorisiert für Geschäftsvorgang）
+Weiteres Referenz-Stimm-Muster geladen?（判断节点，115）：若词序或声纹不一致，判断是否存在更多已加载的参考语音样本（德文：Weiteres Referenz-Stimm-Muster geladen?）
+Nächstes geladenes Referenz-Stimm-Muster heranziehen（处理节点，116）：若存在更多样本，则引入下一条已加载的参考语音样本，并返回“Wortfolge identisch?”重新比对（德文：Nächstes geladenes Referenz-Stimm-Muster heranziehen）
+Abbruch（起止节点，117）：若没有更多参考样本且仍未匹配，则中止流程（德文：Abbruch）
+
+三、流程说明
+本流程为带循环回退的语音身份认证流程。流程通过比对词序和声纹特征判断说话人身份；若某一步骤不匹配，则进入循环加载下一条参考语音样本重新比对，直到找到匹配样本完成授权，或无样本可比对而中止。整体结构体现了“多参考样本逐一比对”的认证逻辑。

@@ -1,0 +1,37 @@
+一、主流程
+你是否想要改变一个习惯？(DO YOU WANT TO CHANGE A HABIT?)
+否 → 停止阅读本流程图。(Quit reading this flowchart.)
+是 ↓
+你想要改变的习惯 (THE HABIT YOU WANT TO CHANGE)
+↓
+诊断习惯的三个组成部分 (DIAGNOSE THE THREE PARTS OF THE HABIT)
+↓ 分出三个分支
+二、步骤1：线索 (STEP 1: THE CUE)
+当你产生执行该习惯的冲动时，问自己…… (When you feel the urge for your habit, ask yourself...)
+↓
+现在几点？(What time is it?)
+↓〔图片在此截断，以下依据原始流程图补全〕
+你在哪里？(Where are you?)
+周围还有谁？(Who else is around?)
+你刚刚做了什么？(What did you just do?)
+你正感受到什么情绪？(What emotion are you feeling?)
+↓
+这5项中有一项就是线索；寻找每次产生冲动时保持不变的那一项。(ONE OF THESE 5 THINGS IS THE CUE)
+三、步骤2：奖赏 (STEP 2: THE REWARD)
+你认为你的习惯满足的是什么渴求？(What craving do you think your habit is satisfying?)
+↓
+验证该理论：(TEST THAT THEORY:)
+↓〔图片在此截断，以下依据原始流程图补全〕
+用另一种奖赏替代（例如：喝杯咖啡代替吃饼干），渴求是否消失？
+是 → 这就是你真正渴求的东西。(THAT'S WHAT YOU'RE REALLY CRAVING)
+否 → 再换一种奖赏替代（例如：散步代替吃饼干），渴求是否消失？
+是 → 这就是你真正渴求的东西。
+否 → 继续试验，直到找到能满足该冲动的东西。(Keep experimenting until you find something that satisfies the urge)
+四、步骤3：惯常行为 (STEP 3: THE ROUTINE)
+既然你已经识别出线索和奖赏，插入一个新的惯常行为。(Now that you have identified the cue and reward, INSERT A NEW ROUTINE.)
+↓〔图片在此截断，以下依据原始流程图补全〕
+选择一个由旧线索触发、并能提供旧奖赏的行为。
+↓
+写下计划：当……时，我将……，因为它为我提供…… (When ... I will ... because it provides me with ...)
+↓
+把计划贴在看得见的地方，尝试一周，最终新行为会变成自动的。(Post this plan where you will see it. Try it for a week. Eventually the new behaviour will become automatic.)

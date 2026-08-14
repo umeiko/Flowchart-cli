@@ -1,0 +1,18 @@
+ADC Configuration流程文字文档
+一、流程概述
+START → PINSEL = 0xFFFF → ADCN = 0x0B90, ADCFG = 1 → CONFIGURE ADC_D0 FOR 8 CONVERSIONS → CONFIGURE ADC_D3 FOR 4 CONVERSIONS → CONFIGURE ADC_S14 FOR 4 CONVERSIONS → CONFIGURE ADC_S15 FOR 4 CONVERSIONS → ADADDR = 0x0013, ADDAI = 0, ADCONV = 1 → END
+（ADC配置流程从“START”开始，依次完成引脚选择、ADC控制与配置寄存器设置，以及多个ADC通道的转换配置，最后清除中断标志并启动ADC，流程结束）
+
+二、详细步骤说明
+START（起止节点）：流程开始
+PINSEL = 0xFFFF（处理节点）：设置引脚选择寄存器PINSEL的值为0xFFFF
+ADCN = 0x0B90, ADCFG = 1（处理节点）：设置ADCN为0x0B90、ADCFG为1，完成ADC基础配置
+CONFIGURE ADC_D0 FOR 8 CONVERSIONS（处理节点）：配置ADC_D0通道进行8次转换，指定ADDATA地址及差分输入、满量程等参数
+CONFIGURE ADC_D3 FOR 4 CONVERSIONS（处理节点）：配置ADC_D3通道进行4次转换，指定ADDATA地址及差分输入、满量程等参数
+CONFIGURE ADC_S14 FOR 4 CONVERSIONS（处理节点）：配置ADC_S14通道进行4次转换，指定ADDATA地址及单端输入、满量程等参数
+CONFIGURE ADC_S15 FOR 4 CONVERSIONS（处理节点）：配置ADC_S15通道进行4次转换，指定ADDATA地址及单端输入、满量程等参数
+ADADDR = 0x0013, ADDAI = 0, ADCONV = 1 (CLEAR INTERRUPT FLAG AND START ADC)（处理节点）：设置ADADDR为0x0013、ADDAI为0、ADCONV为1，清除中断标志并启动ADC
+END（起止节点）：ADC配置流程结束
+
+三、流程说明
+本流程为严格的线性顺序流程，各节点按箭头方向依次执行，无分支判断和循环。流程对多个ADC通道进行顺序配置，最后统一清除中断标志并启动ADC转换，体现嵌入式系统中典型的寄存器初始化流程。

@@ -1,0 +1,15 @@
+Client Check-in Process（客户就诊接待流程）文字文档
+一、流程概述
+Client arrives at practice → Greet client & patient by name → Confirm the purpose of their visit → New contact info? → Complete contact update form → Update contact info in PIMS → Escort client to exam room
+
+二、详细步骤说明
+Client arrives at practice（起止节点）：客户到达诊所/门诊
+Greet client & patient by name（处理节点）：以客户和患者的姓名进行问候
+Confirm the purpose of their visit（处理节点）：确认客户此次到访的目的
+New contact info?（判断节点）：判断是否有新的联系信息需要更新；若有则进入联系信息更新流程，否则直接引导客户进入检查室
+Complete contact update form（处理节点）：填写联系信息更新表
+Update contact info in PIMS（处理节点）：在 PIMS（患者信息管理系统）中更新联系信息
+Escort client to exam room（起止节点）：引导客户进入检查室，接待流程结束
+
+三、流程说明
+本流程为带分支判断的线性接待流程。客户到访后依次完成问候、确认到访目的，并根据是否需要更新联系信息进行分支处理，最终都将引导客户进入检查室。整体流程清晰，分支仅在联系信息更新处出现。

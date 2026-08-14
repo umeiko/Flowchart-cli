@@ -1,0 +1,16 @@
+高中录取判定流程文字文档
+一、流程概述
+Start → Input single-subject score → Input number of subjects → total scores = single-subject score × number of subjects → if total scores > 800 → admitted to No.1 High School / not admitted to No.1 High School → End
+
+二、详细步骤说明
+Start（起止节点）：录取判定流程启动
+Input single-subject score（处理节点）：输入单科成绩
+Input number of subjects（处理节点）：输入科目数量
+total scores = single-subject score × number of subjects（处理节点）：计算总分，总分等于单科成绩乘以科目数量
+if total scores > 800（判断节点）：判断总分是否大于 800；若是则进入录取分支，否则进入未录取分支
+admitted to No.1 High School（处理节点）：总分大于 800，被第一高中录取
+not admitted to No.1 High School（处理节点）：总分不大于 800，未被第一高中录取
+End（起止节点）：录取判定流程结束
+
+三、流程说明
+本流程为带分支判断的线性流程。流程依次输入单科成绩和科目数量，计算总分后根据是否大于 800 分进行分支判断，分别输出录取或未录取结果，最终结束流程。

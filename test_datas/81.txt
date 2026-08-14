@@ -1,0 +1,21 @@
+Team Rating and Improvement Process（团队评级与改进）流程文字文档
+一、流程概述
+Assemble the right team → Do team members represent many views? → Decide rating categories → Are criteria clear? → Choose template → Set template appearance → Enter data → Analyze the chart → Is the most important category known? → Plan improvement on an important category with a big gap → Do it
+
+二、详细步骤说明
+Assemble the right team（起止节点）：组建合适的团队，流程启动
+Do team members represent many views?（判断节点）：判断团队成员是否代表多种观点
+Decide rating categories（处理节点）：确定评级类别
+Are criteria clear?（判断节点）：判断评判标准是否清晰
+Clarify（处理节点）：标准不清晰时进行澄清
+Choose template（处理节点）：选择模板
+Set template appearance（处理节点）：设置模板外观
+Enter data（处理节点）：输入数据
+Analyze the chart（处理节点）：分析图表
+Is the most important category known?（判断节点）：判断最重要的类别是否已知
+Determine importance of categories（处理节点）：未知时确定各类别的重要性
+Plan improvement on an important category with a big gap（处理节点）：针对存在较大差距的重要类别制定改进计划
+Do it（起止节点）：执行改进计划，流程结束
+
+三、流程说明
+本流程为团队评级与改进的循环流程。流程先组建团队并检查团队视角多样性，随后确定评级类别、澄清标准、设置模板、输入数据并分析图表；若最重要的类别不明确，则先确定类别重要性，再制定并执行改进计划。包含两个循环回退：团队视角不足时重新组建团队，标准不清晰时进行澄清。

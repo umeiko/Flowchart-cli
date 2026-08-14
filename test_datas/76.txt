@@ -1,0 +1,21 @@
+审计流程文字文档
+一、流程概述
+Select for audit → Pre-audit notification letter → SI or TPA prepares for audit → Audit field work begins → Auditor completes audit work → Audit field work ends → Closing meeting at audit site → How long does on-site audit take? → Supervisor reviews field work and report → Written audit and report mailed → Agree or request reconsideration → Reconsideration → End of audit
+
+二、详细步骤说明
+Select for audit（起止节点）：选择被审计对象，流程启动
+Pre-audit notification letter（处理节点）：发送预审通知函
+SI or TPA prepares for audit（处理节点）：SI 或 TPA 准备审计工作
+Audit field work begins（处理节点）：现场审计工作开始
+Auditor completes audit work（处理节点）：审计员完成审计工作
+Audit field work ends（处理节点）：现场审计工作结束
+Closing meeting at audit site（处理节点）：在审计现场召开结束会议
+How long does on-site audit take?（处理节点）：评估现场审计所需时间
+Supervisor reviews field work and report（处理节点）：主管复核现场工作与报告
+Written audit and report mailed（处理节点）：审计报告成文并寄出
+Agree or request reconsideration（处理节点）：同意或请求复议
+Reconsideration（判断节点）：判断是否需要进行复议
+End of audit（起止节点）：审计流程结束
+
+三、流程说明
+本流程为审计业务的完整流程，整体呈顺序执行结构，在末尾包含一个关于复议的判断节点。若需要复议则进入 Reconsideration 处理，最终到达 End of audit 节点结束。

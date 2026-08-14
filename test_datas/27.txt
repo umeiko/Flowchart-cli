@@ -1,0 +1,38 @@
+CEQA 环境审查流程文字文档
+一、流程概述
+开始 → 判定是否为“项目” → 判定是否豁免 → 环境影响初步评估 → 主导机构/责任机构分工 → 准备 EIR 或 Negative Declaration → 公众评审 → 最终审批与备案 → 完成
+
+二、详细步骤说明
+开始（起止节点）：CEQA（California Environmental Quality Act，加州环境质量法）审查流程启动
+Public Agency determines whether the activity is a "project"（处理节点）：公共机构判定相关活动是否属于 CEQA 意义上的“项目”
+是否为“项目”（判断节点）：若不属于项目，则无需进一步行动
+Not a project（处理节点）：不属于 CEQA 项目，流程结束分支
+No further action required under CEQA（处理节点）：无需在 CEQA 框架下采取进一步行动
+Project（处理节点）：属于 CEQA 项目，进入豁免判定
+Public Agency determines if the project is exempt（处理节点）：公共机构判定项目是否属于豁免情形
+是否豁免（判断节点）：判断项目是否符合 Ministerial、No possible significant effect、Statutory exemption 或 Categorical exemption 等豁免条件
+Notice of Exemption may be filed（处理节点）：可提交豁免通知
+Public agency evaluates project to determine if there is a possibility that the project may have a significant effect on environment（处理节点）：公共机构评估项目是否可能对环境产生显著影响
+是否存在显著影响（判断节点）：判断是否可能存在显著环境影响
+No possible significant effect（处理节点）：不存在显著环境影响，进入 Negative Declaration 路径
+Negative Declaration（处理节点）：编制否定声明
+Lead Agency gives public notice of availability of Negative Declaration（处理节点）：主导机构发布否定声明可供公众查阅的公告
+Public Review Period（处理节点）：公众评审期
+Determination of lead agency where more than one public agency is involved（处理节点）：涉及多个公共机构时，确定主导机构
+Responsible Agency（处理节点）：责任机构，负责响应咨询并在各阶段参与审查
+Lead Agency（处理节点）：主导机构，负责推进环境审查程序
+Lead agency prepares initial study（处理节点）：主导机构编制初步研究报告
+Lead agency decision to prepare EIR or Negative Declaration（处理节点）：主导机构决定编制环境影响报告书（EIR）或否定声明
+EIR（处理节点）：进入环境影响报告书路径
+Lead agency sends Notice of Preparation to responsible agency（处理节点）：主导机构向责任机构发送准备通知
+Lead agency prepares draft EIR（处理节点）：主导机构编制 EIR 草案
+Lead agency files Notice of Completion and gives public notice of availability of draft EIR（处理节点）：主导机构完成草案备案并公告公众查阅
+Comments on adequacy of draft EIR or Negative Declaration（处理节点）：公众及责任机构对草案充分性提出意见
+Decision-making body considers final EIR or Negative Declaration prepared by lead agency（处理节点）：决策机构审议主导机构编制的最终 EIR 或否定声明
+Findings on feasibility of reducing or avoiding significant environmental effects（处理节点）：形成关于减少或避免重大环境影响的结论
+Decision on permit / Decision on project（处理节点）：对许可证或项目本身作出决定
+File Notice of Determination with Office of Planning & Research / County Clerk（处理节点）：向规划与研究办公室/县书记官提交决定通知
+完成（起止节点）：CEQA 审查流程结束
+
+三、流程说明
+本流程为复杂的多分支判断流程，包含项目认定、豁免判定、环境影响可能性评估、主导机构/责任机构分工、EIR 与 Negative Declaration 两条主要路径，以及多轮公众评审和最终决策备案。流程存在大量并行与汇聚结构，体现了环境法审查的严谨性。

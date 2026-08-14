@@ -1,0 +1,16 @@
+蓝牙设备空闲唤醒流程文字文档
+一、流程概述
+Driver supports Idle → EvtDeviceEnableWakeAtBus() 准备唤醒 → Bluetooth Idle Detected? → EvtDeviceD0Exit() → Wake Signal? → FDO's Wake function → EvtDeviceDisableWakeAtBus() 解除唤醒 → EvtDeviceD0Entry()
+
+二、详细步骤说明
+Driver supports Idle（处理节点）：驱动程序支持空闲状态
+EvtDeviceEnableWakeAtBus() to Arm for wake（处理节点）：调用 EvtDeviceEnableWakeAtBus() 使总线为唤醒做好准备
+Bluetooth Idle Detected（判断节点）：检测蓝牙是否进入空闲状态；若否，循环等待重新准备唤醒；若是，进入下一步
+EvtDeviceD0Exit()（处理节点）：调用 EvtDeviceD0Exit() 退出 D0 电源状态
+Wake Signal（判断节点）：检测是否收到唤醒信号；若否，循环等待；若是，执行唤醒函数
+FDO's Wake function: WdfDeviceIndicateWakeStatus(PDO, success)（处理节点）：调用 FDO 唤醒函数，向 PDO 报告唤醒成功
+EvtDeviceDisableWakeAtBus() to Disarm for wake（处理节点）：调用 EvtDeviceDisableWakeAtBus() 解除总线唤醒准备
+EvtDeviceD0Entry()（处理节点）：调用 EvtDeviceD0Entry() 重新进入 D0 电源状态
+
+三、流程说明
+本流程为带循环等待的蓝牙设备电源管理与唤醒流程。驱动先使能总线唤醒，等待蓝牙空闲后退出 D0 状态；随后等待唤醒信号，收到后报告唤醒状态、解除唤醒准备并重新进入 D0 状态。两个判断节点在未满足条件时均循环回退等待。

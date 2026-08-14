@@ -1,0 +1,27 @@
+UC Libraries STAR Team 学术传播计划评审流程文字文档
+一、流程概述
+开始 → 提交请求 → 形式审查 → 完整性判断 → SCLG审批 → 审批判断 → 产品评估 → 采购决策 → 是否采购 → 结束
+
+二、详细步骤说明
+开始（起止节点）：流程启动，接收来自 Campus or Library Group Request、CKG Request 或 Other UC Group Request 的请求
+Completed Request Form（处理节点）：填写完整的请求表单
+STAR Team reviews request form for completeness（处理节点）：STAR Team 审查请求表单的完整性
+Form complete?（判断节点）：判断表单是否完整；若否，返回请求者补充
+Return form to requestor（处理节点）：将表单退回请求者，补充完善后再次提交
+SCLG Approves for evaluation or makes a request（处理节点）：共享馆藏领导小组（SCLG）批准进行评估或提出意见
+Approved?（判断节点）：判断评估请求是否获得批准；若否，通知相关方并结束
+STAR Team consults with UC Library and CDL experts（处理节点）：STAR Team 咨询加州大学图书馆及 CDL 专家（可选步骤）
+STAR Team conducts product evaluation（处理节点）：STAR Team 执行产品评估
+STAR Team surveys vendor for information about transformative nature of the product（处理节点）：向供应商调研产品的变革性特征（可选步骤）
+Review and recommendation to SCLG（处理节点）：形成评审意见并向 SCLG 提交建议
+SCLG makes purchasing decision（处理节点）：SCLG 做出采购决策
+Make purchase?（判断节点）：判断是否进行采购；若否，进入资金筹措判断
+Review Accounts Receivable Balance（处理节点）：审查应收账款余额
+Candidate for campus or tier 2 purchase（处理节点）：确定为校园级或二级采购候选
+How to fund?（判断节点）：判断资金来源
+Systemwide purchase（处理节点）：系统级采购
+STAR Team notifies requestor and vendor（处理节点）：STAR Team 通知请求者和供应商
+结束（起止节点）：流程结束
+
+三、流程说明
+本流程为带分支判断与循环回退的复杂流程。请求表单不完整时会退回重新提交，形成循环；审批未通过则直接结束；审批通过后进入评估和采购决策阶段，采购判断存在分支路径，最终根据资金方案决定是否采购。

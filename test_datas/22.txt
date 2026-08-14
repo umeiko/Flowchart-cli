@@ -1,0 +1,18 @@
+学术处分与申诉流程文字文档
+一、流程概述
+开始 → 学术状态判定 → 是否申诉 → 申诉结果分支 → 停学/学业观察 → 重新入学申请 → 完成
+
+二、详细步骤说明
+开始（起止节点）：流程启动，学生处于特定学术状态
+First Year, First Semester Suspended for Minimum of One Semester（处理节点）：第一学年第一学期被停学至少一个学期
+Not in Good Standing Suspended for Minimum of One Year（处理节点）：学业状态不佳，被停学至少一年
+No Appeal（处理节点）：学生选择不申诉，直接进入处分执行路径
+Appeal（处理节点）：学生选择提出申诉
+Unsuccessful Appeal（处理节点）：申诉未获成功，进入原处分执行路径
+Successful Appeal（处理节点）：申诉成功，进入学业观察状态
+Poor Academic Standing and subject to the rules for that status（处理节点）：处于学业不佳状态，需遵守相应规定
+Successful Petition for Readmission（处理节点）：重新入学申请获得批准
+完成（起止节点）：流程结束
+
+三、流程说明
+本流程为带分支判断的流程。根据学生是否申诉以及申诉是否成功，流程分为多条路径：不申诉或申诉失败均执行停学处分，申诉成功则转为学业观察状态；各路径最终都汇聚到重新入学申请环节，再进入学业状态管理阶段。

@@ -1,0 +1,22 @@
+Credit Approval Process流程文字文档
+一、流程概述
+Customer buys product → Credit form → Sales call → Order entry → Order form → Credit check → Check accounts receivable balance → Calculate credit terms → Terms approved → Sale approved / Sale not approved
+（信用审批流程从客户购买产品开始，经销售接单、信用部门审核、应收账款核对、信用条款计算，最终审批通过或拒绝销售）
+
+二、详细步骤说明
+Customer buys product（处理节点）：客户购买产品
+Credit form（处理节点）：填写信用表单
+Sales call（处理节点）：销售人员进行销售拜访或电话沟通
+Order entry（处理节点）：录入订单信息
+Order form（处理节点）：生成订单表单
+Credit criteria（处理节点）：信用部门依据信用标准进行审核
+Credit check（判断节点）：进行信用检查；若信用不良（Bad credit），则销售未获批准；若信用良好（OK），则进入应收账款核对
+Sale not approved（起止节点）：因信用不良，销售未获批准，流程结束
+Check accounts receivable balance（判断节点）：核对应收账款余额；若余额正常（OK），则进入信用条款计算；若余额过高（High balance），则返回“Credit check”重新评估
+Calculate credit terms（处理节点）：计算信用条款，参考信用签发报告
+Credit issued report（处理节点）：信用签发报告，作为计算信用条款的依据
+Terms approved（处理节点）：信用条款获得批准
+Sale approved（起止节点）：销售获得批准，流程结束
+
+三、流程说明
+本流程为跨部门泳道流程图，涉及CUSTOMER、SALES、MANAGEMENT、CREDIT DEPARTMENT四个角色/部门。流程中包含判断分支和循环回退：信用检查不通过直接拒绝销售；应收账款余额过高时返回信用检查节点重新评估；信用条款计算通过后最终批准销售。整体体现了销售与信用审批的协同决策过程。

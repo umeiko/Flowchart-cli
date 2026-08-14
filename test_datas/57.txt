@@ -1,0 +1,14 @@
+DFS 阵容构建流程（Week 16 DraftKings GPP Sunday）文字文档
+一、流程概述
+开始 → 游戏堆叠（QB/WR + WR/TE） → RB + DEF 堆叠 → 低拥有率球员（<5%，2人） → 热门/明星球员（STUDS/Chalk，2人） → 完成
+
+二、详细步骤说明
+开始（起止节点）：流程启动，标题为“@JonBoyBeats DFS Flowchart - Week 16, DraftKings - GPP - Sunday”
+游戏堆叠（处理节点）：节点文字为“1. Game Stack (QB/WR + WR/TE)”，选择同一支球队的四分卫（QB）与外接手/近端锋（WR/TE）进行堆叠；示例组合为 Philip Rivers（QB，$5700）+ Keenan Allen（WR，$6300）+ Darren Waller（TE，$6100），合计 $18,100，剩余 $5,316/人
+RB + DEF 堆叠（处理节点）：节点文字为“2. RB + DEF Stack”，选择跑卫（RB）与对应球队防守组（DEF）进行堆叠；示例组合一为 James Conner（RB，$6500）+ PIT Steelers Defense（$3900），合计 $28,500；组合二为 Joe Mixon（RB，$6600）+ CIN Bengals Defense（$2900），合计 $27,600
+低拥有率球员（判断/处理节点）：节点文字为“3. Ownership <5% (2 Players)”，从低拥有率（<5%）球员中挑选 2 人；候选包括 David Johnson、Curtis Samuel、Danny Amendola、John Ross、Mark Ingram 等，合计约 $37,900–$38,200
+热门/明星球员（处理节点）：节点文字为“4. STUDS/Chalk (2 Players)”，挑选 2 名热门或明星球员；候选包括 Austin Ekeler、Tyler Boyd、Devonta Freeman、Terry McLaurin、Michael Gallup、Miles Sanders 等
+完成（起止节点）：通过四个步骤构建出完整的 DFS  fantasy football 阵容
+
+三、流程说明
+本流程为四层递进式的阵容构建决策流程。从左到右依次完成：游戏堆叠、跑卫+防守组堆叠、低拥有率差异化选择以及热门明星球员选择；各层之间通过箭头组合形成完整阵容，体现了 DFS GPP 锦标赛中“堆叠+低拥有率+明星”的建队策略。

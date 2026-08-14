@@ -1,0 +1,19 @@
+在线求职问卷填写流程文字文档
+一、流程概述
+开始 → 填写基本信息 → 是否为学生 → 学生分支/工作经历分支 → 团队领导经历判断 → 期望薪资 → 完成
+
+二、详细步骤说明
+开始（起止节点）：问卷填写流程启动
+1. Your Name, 2. Date of birth, 3. Work experience, 4. Are you a student?（处理节点）：填写姓名、出生日期、工作经历以及是否为学生
+5. PageBreak1 Question #4（判断节点）：判断问题4“是否为学生”的回答；若是，进入学生信息填写；若否，进入工作经历填写
+6. Name of school, 7. Major, 8. Expected graduation date（处理节点）：填写学校名称、专业和预计毕业日期
+9. PageBreak2 Question #4（判断节点）：对学生身份相关问题的确认，无论是否继续均进入期望薪资环节
+10. Have you worked in a team?, 11. Have you ever led a team?, 12. Programming skills（处理节点）：填写团队合作经历、是否领导过团队以及编程技能
+13. PageBreak3 Question #11（判断节点）：判断问题11“是否领导过团队”的回答；若是，填写团队规模；若否，直接进入期望薪资
+14. How big was the team you led?（处理节点）：填写所领导团队的规模
+15. PageBreak4（判断节点）：团队规模问题的分页确认
+16. Expected gross salary（处理节点）：填写期望税前薪资
+完成（起止节点）：问卷填写流程结束
+
+三、流程说明
+本流程为带条件分支的问卷填写流程。根据“是否为学生”和“是否领导过团队”两个判断节点形成不同的题目路径，学生需填写教育信息，非学生需填写团队与技能信息，最终所有路径汇聚到期望薪资并结束。

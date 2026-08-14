@@ -1,0 +1,14 @@
+温度判断流程文字文档
+一、流程概述
+Start → Read Temp → Temp < 32? → Print "Below Freezing" / Print "Above Freezing" → End
+
+二、详细步骤说明
+Start（起止节点）：流程开始
+Read Temp（处理节点）：读取当前温度值
+Temp < 32?（判断节点）：判断温度是否低于 32（单位通常为华氏度）
+Print "Below Freezing"（处理节点）：若温度低于 32，输出“Below Freezing（冰点以下）”
+Print "Above Freezing"（处理节点）：若温度不低于 32，输出“Above Freezing（冰点以上）”
+End（起止节点）：流程结束
+
+三、流程说明
+本流程为简单的分支判断流程。流程开始后读取温度，根据温度是否低于 32 华氏度分为两条分支，分别输出“Below Freezing”或“Above Freezing”，最后汇合到“End”结束。流程结构清晰，仅含一个判断节点，无循环。

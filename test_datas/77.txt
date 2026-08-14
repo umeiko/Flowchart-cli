@@ -1,0 +1,32 @@
+NGO Storytelling流程文字文档
+一、流程概述
+开始 → IS YOUR STORY ABOUT... → A PERSON / A PROGRAM / AN ISSUE / NUMBERS 分支 → 对应采访/制作/可视化方案 → 结束
+
+二、详细步骤说明
+开始（起止节点）：NGO 故事策划流程启动
+IS YOUR STORY ABOUT...（判断节点）：判断故事主题属于人物、项目、议题还是数据
+A PERSON（处理节点）：故事主角为某个人物
+Can the person be interviewed?（判断节点）：判断该人物是否可以接受采访
+Is the story happening now or in the past?（判断节点）：判断故事发生在现在还是过去
+Make a video（处理节点）：故事发生在现在且可采访，制作视频
+Write a story with photos（处理节点）：故事发生在过去，或无法采访但能获取照片时，撰写图文故事
+Can you interview someone else about this person?（判断节点）：无法直接采访时，判断是否可采访其他人
+Can you get interesting, clear, in-focus photos of this person?（判断节点）：判断是否能获取优质人物照片
+Move on（处理节点）：条件不满足，跳过该人物主题
+A PROGRAM（处理节点）：故事主题为一个项目
+Do you have enough information about what is happening and where?（判断节点）：判断是否掌握足够信息
+Make a map（处理节点）：信息充分时制作地图展示项目地理覆盖
+Do you have interesting, clear, in-focus photos of the program activities?（判断节点）：判断是否有项目活动照片
+Create a photo gallery（处理节点）：有照片时创建照片画廊
+AN ISSUE（处理节点）：故事主题为一个社会议题
+Do you have a person through whom this story can be told?（判断节点）：判断是否能通过一个具体人物讲述该议题
+Are people talking about this issue on Facebook, Twitter or Instagram?（判断节点）：判断社交媒体上是否有人讨论该议题
+Make a social story（处理节点）：在社交媒体上制作社交故事
+See "A Person" section（处理节点）：引导返回“A PERSON”分支，通过人物讲述议题
+NUMBERS（处理节点）：故事主题涉及数据
+Can you fact check the source to ensure it's reliable?（判断节点）：判断数据来源是否可靠
+Make an infographic（处理节点）：数据可靠时制作信息图
+结束（起止节点）：故事形式确定，流程结束
+
+三、流程说明
+本流程为 NGO 故事形式选择的决策树流程。根据故事主题（人物、项目、议题、数据）进入不同分支，各分支通过多个判断节点进一步决定最终的故事呈现方式（视频、图文、地图、照片画廊、社交故事、信息图等）。

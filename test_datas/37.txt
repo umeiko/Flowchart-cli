@@ -1,0 +1,30 @@
+Sample School Organizational Chart（学校组织架构图）文字文档
+一、流程概述
+Voters → School Committee → Superintendent [Name] → 下设 Principal（校长）、Director of Maintenance（维护主管）、Director of Business Services（商业服务主管）等职能分支
+
+二、详细步骤说明
+Voters（起止节点）：选民/投票人，为组织最高层级
+School Committee（处理节点）：学校委员会，由选民产生
+Superintendent [Name]（处理节点）：学区总监，对学校委员会负责，统筹管理学校整体事务
+Secretary（处理节点）：学区总监秘书
+Principal [Name]（处理节点）：校长，负责学校教学与行政管理
+Vice Principal [Name]（处理节点）：副校长，协助校长工作
+Secretary（处理节点）：校长/副校长秘书
+Teachers（处理节点）：教师
+Social Worker（处理节点）：社会工作者
+Nurse（处理节点）：护士
+Librarian（处理节点）：图书管理员
+Coaches（处理节点）：教练
+Director of Maintenance [Name]（处理节点）：维护主管，负责学校设施与后勤维护
+Custodians（处理节点）：保洁人员
+Transportation Staff（处理节点）：交通/校车工作人员
+IT Staff（处理节点）：信息技术人员
+Building Supervisors（处理节点）：楼宇管理员
+Director of Business Services [Name]（处理节点）：商业服务主管，负责学校财务与后勤服务
+Payroll Supervisor（处理节点）：薪酬主管
+AP / AR Clerk（处理节点）：应付/应收账款职员
+Head Cook（处理节点）：主厨
+Other（处理节点）：其他岗位
+
+三、流程说明
+本图为学校组织架构图（Organizational Chart），并非典型的起止型流程图。图中以层级关系展示学校管理结构：选民产生学校委员会，委员会任命学区总监，总监下设校长、维护主管、商业服务主管等岗位，各岗位再分管具体职能部门。整体结构呈树状层级分布。

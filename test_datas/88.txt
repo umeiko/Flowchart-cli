@@ -1,0 +1,22 @@
+Office Language Installation流程文字文档
+一、流程概述
+Start → Users need only one language? → More than one language available? → Same language that's on user's operating system? → Let Office default to operating system language or use Config.xml to specify language to install → Done / Run Setup.exe → Done / Need dialog boxes in multiple languages? → Copy language pack and configure → Need to edit in languages without UI? → Companion languages include language needed? → Install proofing tools → Done
+（Office语言安装流程从“Start”开始，根据用户语言需求、可用语言种类、操作系统语言等条件分支，最终通过配置或运行安装程序完成部署）
+
+二、详细步骤说明
+Start（起止节点）：流程开始
+Users need only one language?（判断节点）：判断用户是否只需要一种语言
+More than one language available?（判断节点）：若只需要一种语言，判断是否存在多种可用语言
+Same language that's on user's operating system?（判断节点）：若存在多种语言，判断其中是否有与用户操作系统相同的语言
+Let Office default to operating system language or use Config.xml to specify language to install（处理节点）：若语言与系统语言相同，让Office默认使用系统语言，或使用Config.xml指定要安装的语言
+Use Config.xml to specify the language to install（处理节点）：若语言与系统语言不同，使用Config.xml指定要安装的语言
+Run Setup.exe（处理节点）：若只有一种可用语言，直接运行Setup.exe进行安装
+Need dialog boxes in multiple languages?（判断节点）：若用户需要多种语言，判断是否需要多语言对话框
+Copy single language pack or Multilanguage pack to installation share. Use Config.xml to specify languages to install. Run Setup.exe.（处理节点）：若需要多语言对话框，复制语言包到安装共享目录，使用Config.xml指定要安装的语言，并运行Setup.exe
+Need to edit in languages without UI?（判断节点）：判断是否需要在没有用户界面的语言中进行编辑
+Companion languages include language needed?（判断节点）：若需要编辑无UI语言，判断配套语言中是否包含所需语言
+Use Proofing Tools Config.xml to specify language kits to install. Install Microsoft Office Proofing Tools Kit 2007 from Multilanguage pack.（处理节点）：若配套语言不包含所需语言，使用Proofing Tools Config.xml指定要安装的语言包，并从多语言包安装Office Proofing Tools Kit 2007
+Done（起止节点）：流程结束，安装配置完成
+
+三、流程说明
+本流程为带多重条件分支的部署流程。流程根据用户语言需求、可用语言数量、系统语言匹配情况以及是否需要多语言UI和校对工具等因素进行多路分支判断，不同分支执行相应的配置或安装操作，最终均到达“Done”结束。整体体现了“按条件选择安装策略”的特点。

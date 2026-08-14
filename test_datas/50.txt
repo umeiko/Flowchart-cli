@@ -1,0 +1,24 @@
+H-Option 荣誉项目申请流程文字文档
+一、流程概述
+Weeks 2-5 与教授讨论 H-Option → Week 6 在线提交 H-Option Form 1 → 教授批准 → 荣誉项目主任批准 → 收到确认邮件 → Week 6-13 开展项目 → Week 14 在线提交 H-Option Form 2 → 教授批准 → 荣誉项目主任批准 → 收到完成确认邮件
+
+二、详细步骤说明
+Weeks 2-5 Discuss H-Option with Professor（处理节点）：第 2-5 周与教授讨论 H-Option 项目
+Monday, Week 6 Submit H-Option Form 1 Online（处理节点）：第 6 周周一在线提交 H-Option Form 1
+Professor denies H-Option Form 1（处理节点）：教授驳回 Form 1
+Resubmit H-Option Form 1（处理节点）：重新提交 H-Option Form 1
+Professor approves H-Option Form 1（处理节点）：教授批准 Form 1
+Honors Director denies H-Option Form 1（处理节点）：荣誉项目主任驳回 Form 1
+Honors Director approves H-Option Form 1（处理节点）：荣誉项目主任批准 Form 1
+Receive confirmation e-mail. Access to Form 2 opens. Yay!（处理节点）：收到确认邮件，Form 2 入口开放
+Week 6-13 Work on project: Meet at least once with your professor（处理节点）：第 6-13 周开展项目，期间至少与教授会面一次
+Week 14 Submit H-Option Form 2 Online（处理节点）：第 14 周在线提交 H-Option Form 2
+Professor denies H-Option Form 2（处理节点）：教授驳回 Form 2
+Resubmit H-Option Form 2（处理节点）：重新提交 H-Option Form 2
+Professor approves H-Option Form 2 (by final day of Exam Week)（处理节点）：教授在期末考试周最后一天前批准 Form 2
+Honors Director denies H-Option Form 2（处理节点）：荣誉项目主任驳回 Form 2
+Honors Director approves H-Option Form 2（处理节点）：荣誉项目主任批准 Form 2
+Receive confirmation e-mail. You have completed your project. Great work!!!（处理节点）：收到完成确认邮件，项目完成
+
+三、流程说明
+本流程为带分支判断与循环回退的荣誉项目申请流程。分为 Form 1 和 Form 2 两个阶段，每个阶段都需要教授与荣誉项目主任两级审批；任一环节被驳回均需重新提交并再次审批，通过后进入下一阶段，最终收到项目完成确认。

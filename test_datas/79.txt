@@ -1,0 +1,19 @@
+Observation Data Reduction（天文观测数据处理）流程文字文档
+一、流程概述
+Characterise target & ref. stars and baseline calibrators → APES/P2PP → Detector calibration / Science observations / Baseline calibration observations → Online averaging → Offline correction of instrumental effects → Offline astrometric correction and fitting → Data product
+
+二、详细步骤说明
+Characterise target & ref. stars and baseline calibrators（处理节点）：表征目标星、参考星和基线定标星
+APES/P2PP（处理节点）：使用观测准备软件 APES/P2PP 进行准备
+Detector calibration（处理节点）：探测器定标
+Science observations（处理节点）：科学观测
+Baseline calibration observations（处理节点）：基线定标观测
+Online averaging（处理节点）：在线平均处理
+Offline correction of instrumental effects（处理节点）：离线修正仪器效应
+Co.Co.（处理节点）：关联计算输入（Contribution Correlation 等）
+Baseline calculation（处理节点）：基线计算
+Offline astrometric correction and fitting（处理节点）：离线天体测量修正与拟合
+Data product（起止节点）：生成数据产品，流程结束
+
+三、流程说明
+本流程为天文观测从准备到数据产品的线性处理流程。首先对目标进行表征并使用 APES/P2PP 软件准备；随后并行开展探测器定标、科学观测和基线定标观测，结果汇入在线平均；再经过仪器效应修正、基线计算和关联输入，最终通过天体测量修正与拟合得到数据产品。整体以顺序执行为主，局部存在并行分支。

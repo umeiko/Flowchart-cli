@@ -1,0 +1,29 @@
+销售中何时使用社交媒体流程文字文档
+一、流程概述
+开始 → 买家是否使用社交媒体？ → （否）坚持使用传统销售拓客 → 结束；
+开始 → 买家是否使用社交媒体？ → （不知道）→ 是否知道其LinkedIn账号？ → （否）→ 是否知道其Twitter账号？ → （否）→ 回到判断起点；
+开始 → 买家是否使用社交媒体？ → （不知道）→ 是否知道其LinkedIn账号？ → （是）→ 个性化LinkedIn邀请并建立联系 → 如何个性化LinkedIn邀请？ → 了解买家个人生活/业务/行业 → 完成7次触达 → 结束；
+是否知道其Twitter账号？ → （是）→ 关注账号 → 点赞推文 → 转发并回复推文 → 完成7次触达 → 结束。
+
+二、详细步骤说明
+When To Use Social Media When Selling（起止节点）：销售中社交媒体使用决策流程的起点。
+Is your buyer on social media? / 买家是否使用社交媒体？（判断节点）：判断目标客户是否使用社交媒体。
+Stick to traditional sales prospecting. Good luck. / 坚持使用传统销售拓客（处理节点）：若买家不使用社交媒体，则沿用传统销售方式，流程结束。
+Alright, let's find out. / 好的，来查一下（处理节点）：若不确定买家是否使用社交媒体，则进入进一步调查。
+Do they have a LinkedIn account? / 是否知道其LinkedIn账号？（判断节点）：判断买家是否有LinkedIn账号。
+Woot! Personalize LinkedIn invite and connect with buyer. / 个性化LinkedIn邀请并与买家建立联系（处理节点）：若有LinkedIn账号，则发送个性化邀请并建立联系。
+How do I personalize the LinkedIn invite? / 如何个性化LinkedIn邀请？（判断节点）：触发个性化内容准备步骤。
+1. Find something about their personal life. / 了解其个人生活（处理节点）：准备与个人生活相关的内容。
+2. Something about their business. / 了解其业务（处理节点）：准备与业务相关的内容。
+3. Something about their industry. / 了解其行业（处理节点）：准备与行业相关的内容。
+Do they have a Twitter account? / 是否知道其Twitter账号？（判断节点）：判断买家是否有Twitter账号。
+Nice! / 很好（处理节点）：确认可使用Twitter进行互动。
+1. Follow their Twitter account. / 关注其Twitter账号（处理节点）：第一步关注账号。
+2. Like two of their tweets. / 点赞两条推文（处理节点）：第二步点赞推文。
+3. Retweet and reply one of their tweets. / 转发并回复一条推文（处理节点）：第三步转发并回复，可与第2步循环重复。
+Done, what's next? / 完成，下一步是什么？（判断节点）：Twitter互动完成后的状态确认。
+Fact: You have touched your buyer 7 times in 7 minutes or less. / 已完成7次触达（处理节点）：达到销售触达目标，流程结束。
+Fact: Click HERE to make cool sales process charts. / 附加信息节点（处理节点）：流程图附带的提示信息，非主流程节点。
+
+三、流程说明
+本流程为带多分支、循环回退的决策树流程。从“买家是否使用社交媒体”开始，根据回答进入不同分支：否定者走传统销售路径，不确定者进入LinkedIn/Twitter双平台判断，各平台又细分为具体互动步骤。Twitter路径中存在“点赞—转发回复”的循环，多个分支最终汇合到“7次触达”目标节点。

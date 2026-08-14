@@ -1,0 +1,27 @@
+Renewal Management流程文字文档
+一、流程概述
+Customer Center → Are you using Renewal Management? → User Center / Action>New Submission → Submission Group → New Submission → Submit to Another Company? → eForms Manager / Submission Group>Copy Submission → Do you have feedback or quote? → Activity / Do you want to see status? → Submission tracking report / Ready to turn submission into policy? → See Renewal Policy
+
+二、详细步骤说明
+Customer Center（起止节点）：客户中心，流程启动
+Are you using Renewal Management?（判断节点）：判断是否使用续保管理功能
+User Center（处理节点）：使用续保管理时进入用户中心
+My Renewals Tab>Click M to Submit（处理节点）：在“我的续保”标签页点击 M 提交
+Submission Group>Click to Open（处理节点）：点击打开提交组
+Action>New Submission（处理节点）：不使用续保管理时新建提交
+Submission Group>Copy Submission（处理节点）：复制提交组
+Copy Policy>Enter Info>Click OK（处理节点）：复制保单、输入信息并确认
+New Submission>Enter Details>Save & Close（处理节点）：输入新提交详情并保存关闭
+Submit to Another Company?（判断节点）：判断是否提交给其他公司
+eForms Manager>create, print, fax applications（处理节点）：否，进入 eForms 管理器创建、打印、传真申请
+Submission Group>Copy Submission（处理节点）：是，复制提交组
+Do you have feedback or quote?（判断节点）：判断是否有反馈或报价
+Activity>Enter Activity（处理节点）：有反馈或报价时录入活动
+Policy Submission>Enter Quote（处理节点）：录入保单提交报价
+Do you want to see status?（判断节点）：判断是否查看状态
+Submission tracking report（处理节点）：查看提交跟踪报告
+Ready to turn submission into policy?（判断节点）：判断是否将提交转为保单
+See Renewal Policy（起止节点）：查看续保保单，流程结束
+
+三、流程说明
+本流程为保险续保管理业务的多分支判断流程，包含多个循环回退。根据是否使用续保管理、是否提交给其他公司、是否有反馈或报价、是否查看状态等判断节点，流程在不同处理节点之间跳转，最终可能进入“查看续保保单”结束节点，或在未满足条件时循环等待。

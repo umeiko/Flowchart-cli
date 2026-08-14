@@ -1,0 +1,21 @@
+Image Zone Processing流程文字文档
+一、流程概述
+START → i = 1 → IMAGE i-th ZONE → EXTRACT RED ZONE → IS SIZE OF RED ZONE GREATER THAN FIXED SIZE? → CALCULATE CENTER OF RED ZONE → EXTRACT YELLOW ZONE → IS SIZE OF YELLOW ZONE GREATER THAN FIXED SIZE? → CALCULATE CENTER OF YELLOW ZONE AND IDENTIFY SHAPE → i = i + 1 → END OF ENTIRE SCREEN? → END
+（图像区域处理流程从“START”开始，初始化计数器i后逐区域提取红色和黄色区域，根据区域大小决定是否计算中心及识别形状，最后递增i并判断整个屏幕是否处理完毕）
+
+二、详细步骤说明
+START（起止节点，ST4-1）：流程开始
+i = 1（处理节点，ST4-2）：初始化区域索引i为1
+IMAGE i-th ZONE（处理节点，ST4-3）：对第i个区域进行成像
+EXTRACT RED ZONE（处理节点，ST4-4）：从当前区域中提取红色区域
+IS SIZE OF RED ZONE GREATER THAN FIXED SIZE?（判断节点，ST4-5）：判断红色区域尺寸是否大于固定阈值
+CALCULATE CENTER OF RED ZONE（处理节点，ST4-6）：若红色区域足够大，计算红色区域的中心
+EXTRACT YELLOW ZONE（处理节点，ST4-7）：从当前区域中提取黄色区域
+IS SIZE OF YELLOW ZONE GREATER THAN FIXED SIZE?（判断节点，ST4-8）：判断黄色区域尺寸是否大于固定阈值
+CALCULATE CENTER OF YELLOW ZONE AND IDENTIFY SHAPE（处理节点，ST4-9）：若黄色区域足够大，计算黄色区域中心并识别其形状
+i = i + 1（处理节点，ST4-10）：区域索引加1，准备处理下一个区域
+END OF ENTIRE SCREEN?（判断节点）：判断是否已处理完整个屏幕的所有区域
+END（起止节点）：若已处理完毕，流程结束
+
+三、流程说明
+本流程为带条件判断和循环的图像处理流程。流程按区域顺序扫描屏幕，对每个区域分别提取红色和黄色区域，并根据区域大小决定是否进行后续计算；完成当前区域处理后索引自增，若未到达屏幕末尾则返回继续处理下一区域，体现“逐区域扫描、条件过滤、循环处理”的特点。

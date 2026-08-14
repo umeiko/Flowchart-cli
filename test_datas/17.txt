@@ -1,0 +1,14 @@
+SAP MIGO 收货检验流程文字文档
+一、流程概述
+Start → Run the transaction 'MIGO' → Vendor and material check in table ZAUTO_UD → Post Good Receipt → Stop
+
+二、详细步骤说明
+Start（起止节点）：流程开始
+Run the transaction 'MIGO'（处理节点）：执行 SAP 事务码 MIGO，进入收货操作
+Vendor and material check in table ZAUTO_UD（判断节点）：在表 ZAUTO_UD 中检查供应商和物料信息，判断是否需要自动更新检验批
+Inspection lot will update as 'A-Accept' via BAPI (BAPI_INSPLOT_SETUSAGEDECISION)（处理节点）：若检查通过（Yes），调用 BAPI_INSPLOT_SETUSAGEDECISION 将检验批更新为“A-Accept（接受）”状态
+Post Good Receipt（处理节点）：执行过账收货（Post Good Receipt）
+Stop（起止节点）：流程结束
+
+三、流程说明
+本流程为 SAP 系统中基于 MIGO 事务的收货与检验批处理流程，包含一个判断节点。当供应商和物料在 ZAUTO_UD 表中校验通过时，会额外调用 BAPI 更新检验批为“A-Accept”；无论是否触发该更新，最终都进入“Post Good Receipt”节点完成收货过账，流程整体为带条件分支的线性流程。
