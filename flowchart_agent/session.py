@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from .agent import FlowchartAgent
 from .config import Settings
@@ -24,6 +25,7 @@ class DiagramSession:
 
     def __init__(self, settings: Settings, output_dir: str | Path):
         self._agent = FlowchartAgent(settings)
+        self._chrome_path = settings.chrome_path
         self._output_dir = Path(output_dir)
         self._default_bg = settings.render_background
         self.requirement = ""
@@ -32,6 +34,8 @@ class DiagramSession:
         self.version = 0
         self.style: Style | None = None  # 当前风格插件；None = 默认风格
         self._background_override: str | None = None  # 用户显式指定的画布背景色
+        # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
+        self.on_delta: Callable[[str], None] | None = None
 
     @property
     def has_diagram(self) -> bool:
@@ -137,6 +141,7 @@ class DiagramSession:
             reference_image=reference_image,
             background=self._background_override,
             style=self.effective_style,
+            on_delta=self.on_delta,
         )
         if not result.success:
             feedback = result.final_feedback or "未知原因"
@@ -156,6 +161,7 @@ class DiagramSession:
         svg = render_mermaid(
             result.mermaid_code, self._output_dir,
             stem="current", fmt="svg", background=self.background,
+            chrome_path=self._chrome_path,
         )
         svg_note = f"\nSVG：{svg.image_path}" if svg.ok else ""
         return (

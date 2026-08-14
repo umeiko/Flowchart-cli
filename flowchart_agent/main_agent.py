@@ -87,6 +87,7 @@ class MainAgent:
         settings: Settings,
         session: DiagramSession,
         on_tool_call: Callable[[str, str], None] | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ):
         self._llm = LLMClient(settings.text_model)
         self._vision = settings.text_model_vision
@@ -99,6 +100,7 @@ class MainAgent:
         system = MAIN_SYSTEM + (_VISION_ON if self._vision else _VISION_OFF)
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._on_tool_call = on_tool_call  # 界面层用来展示工具调用过程
+        self._on_delta = on_delta  # 界面层用来流式显示模型输出
 
     def chat(self, user_input: str, images: list[Path] | None = None) -> str:
         if images and not self._vision:
@@ -116,7 +118,12 @@ class MainAgent:
             if override is not None:
                 messages = self._messages[:-1] + [override]
                 override = None
-            msg = self._llm.chat_with_tools(messages, self._tools)
+            if self._on_delta is not None:
+                msg = self._llm.chat_with_tools_stream(
+                    messages, self._tools, on_delta=self._on_delta
+                )
+            else:
+                msg = self._llm.chat_with_tools(messages, self._tools)
             if not msg.tool_calls:
                 self._messages.append({"role": "assistant", "content": msg.content or ""})
                 return msg.content or ""

@@ -48,6 +48,7 @@ class FlowchartAgent:
         reference_image: str | Path | None = None,
         background: str | None = None,
         style: Style | None = None,
+        on_delta=None,
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -57,6 +58,7 @@ class FlowchartAgent:
         仅在 TEXT_MODEL_VISION=true 且第一轮生成时随消息发送。
         background：画布背景色，优先于 style 的背景与 RENDER_BACKGROUND 配置。
         style：风格插件（见 styles.py），注入主题指令并提供默认背景色。
+        on_delta：生成阶段的流式文本回调（界面层实时显示），None 为非流式。
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +88,7 @@ class FlowchartAgent:
                 code, raw = self._generate(
                     document, code, feedback,
                     image=first_round_image if round_no == 1 else None,
+                    on_delta=on_delta,
                 )
                 raw_path = output_dir / f"round_{round_no}_generate_raw.txt"
                 raw_path.write_text(raw, encoding="utf-8")
@@ -107,6 +110,7 @@ class FlowchartAgent:
                 render = render_mermaid(
                     styled, output_dir, stem=f"round_{round_no}",
                     fmt=self._settings.output_format, background=bg,
+                    chrome_path=self._settings.chrome_path,
                 )
                 record.render_ok = render.ok
                 record.image_path = render.image_path
@@ -163,6 +167,7 @@ class FlowchartAgent:
         prev_code: str,
         feedback: str,
         image: Path | None = None,
+        on_delta=None,
     ) -> tuple[str, str]:
         """返回 (提取出的 Mermaid 代码, 模型原始输出)。image 为参考图（多模态模型时）。"""
         if not prev_code:
@@ -180,7 +185,9 @@ class FlowchartAgent:
             {"role": "user", "content": user},
         ]
         if image:
-            raw = self._text_llm.chat_with_images(messages, [image])
+            messages = self._text_llm.with_images(messages, [image])
+        if on_delta is not None:
+            raw = self._text_llm.chat_stream(messages, on_delta)
         else:
             raw = self._text_llm.chat(messages)
         return extract_mermaid(raw), raw

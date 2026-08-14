@@ -4,7 +4,9 @@
 - 启动横幅、Claude Code 风格的 ❯ 输入提示与底部快捷键提示栏；
 - ↑/↓ 翻阅历史输入（跨会话持久化），历史命令幽灵提示与斜杠命令补全；
 - Ctrl+C 取消当前输入或进行中的请求，Ctrl+D 退出；
-- 拖入图片文件自动变成彩色 [图片:文件名] 芯片，Backspace 一次整块删除。
+- 拖入图片文件自动变成彩色 [图片:文件名] 芯片，Backspace 一次整块删除；
+- 模型输出流式实时显示：生成 Mermaid 与最终回复都边产出边滚动，
+  服务商不支持流式时自动退回一次性显示。
 """
 
 from __future__ import annotations
@@ -19,8 +21,11 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PtStyle
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.text import Text
 
 from . import __version__
 from .config import Settings
@@ -74,7 +79,13 @@ _HELP = """\
 
 def run_chat(settings: Settings, output_dir: Path) -> int:
     session = DiagramSession(settings, output_dir)
-    agent = MainAgent(settings, session, on_tool_call=_show_tool_call)
+    display = _StreamDisplay(console)
+    session.on_delta = display.show_generation  # 生成循环的 Mermaid 原文流
+    agent = MainAgent(
+        settings, session,
+        on_tool_call=_show_tool_call,
+        on_delta=display.show_reply,  # 主 Agent 回复流
+    )
     _print_banner(output_dir, settings)
     chips = ChipRegistry()
     prompt_session = _make_prompt_session(chips)
@@ -114,7 +125,7 @@ def run_chat(settings: Settings, output_dir: Path) -> int:
                           + "、".join(p.name for p in images) + "[/dim]")
 
         try:
-            with console.status("[cyan]助手工作中…[/cyan]", spinner="dots"):
+            with display:
                 reply = agent.chat(resolved_input, images=images or None)
         except KeyboardInterrupt:  # Ctrl+C：打断进行中的请求，回到输入
             console.print("[yellow]已取消本次请求。[/yellow]")
@@ -143,6 +154,60 @@ def _make_prompt_session(chips: ChipRegistry) -> PromptSession:
         key_bindings=make_key_bindings(chips),
         input_processors=[ChipColorProcessor()],
     )
+
+
+class _StreamDisplay:
+    """请求进行中的实时显示区：无流式内容时是 spinner，有增量文本时滚动展示。
+
+    主 Agent 回复与生成循环的 Mermaid 原文共用一块 Live 区域；段落切换时
+    丢弃上一段（中间过程文本），transient 模式在请求结束后整段擦除，
+    最终回答由调用方另出 Panel 展示。
+    """
+
+    def __init__(self, console: Console):
+        self._console = console
+        self._live: Live | None = None
+        self._buf: list[str] = []
+        self._title = ""
+
+    def __enter__(self) -> "_StreamDisplay":
+        self._buf, self._title = [], ""
+        self._live = Live(
+            Spinner("dots", text="[cyan]助手工作中…[/cyan]"),
+            console=self._console,
+            refresh_per_second=8,
+            transient=True,
+        )
+        self._live.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+
+    def show_reply(self, delta: str) -> None:
+        self._feed("[bold green]助手[/bold green]", "green", delta)
+
+    def show_generation(self, delta: str) -> None:
+        self._feed("[bold cyan]生成 Mermaid 中…[/bold cyan]", "cyan", delta)
+
+    def _feed(self, title: str, border: str, delta: str) -> None:
+        if self._live is None:
+            return
+        if self._buf and title != self._title:
+            self._buf = []  # 段落切换：中间过程文本不保留
+        self._title = title
+        self._buf.append(delta)
+        self._live.update(
+            Panel(
+                Text("".join(self._buf)),
+                title=title,
+                title_align="left",
+                border_style=border,
+                padding=(0, 1),
+            )
+        )
 
 
 def _show_tool_call(name: str, arguments: str) -> None:
