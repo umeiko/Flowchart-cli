@@ -112,6 +112,7 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
         bg = (style.background if style else None) or settings.render_background
         svg = render_mermaid(
             result.mermaid_code, output, stem="final", fmt="svg", background=bg,
+            chrome_path=settings.chrome_path,
         )
         print(f"成功（{len(result.rounds)} 轮）：{final_mmd}")
         if svg.ok:

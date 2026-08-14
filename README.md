@@ -37,6 +37,7 @@ flowchart TD
 
 - **对话修改**：`把登录改成验证码登录` —— 在现有图上修订，重走验证循环
 - **贴图生成**：拖入手绘草图/现有流程图截图（`TEXT_MODEL_VISION=true`），模型看图作画
+- **流式输出**：模型回复与 Mermaid 生成过程边产出边滚动显示，长文档也不用干等；服务商不支持流式时自动退回一次性返回
 - **风格模板**：`styles/` 目录下每个 `.md` 文件就是一个风格插件（内置 default / dark），主 Agent 自己发现并按需选用；往目录丢一个 markdown 即可新增风格（格式见 `styles/README.md`）；`default.md` 始终生效，编辑它即可定制全局默认风格
 
 ## 安装
@@ -66,6 +67,10 @@ Windows 用户建议使用 Windows Terminal 或 VS Code 终端。
 cp .env.example .env
 # 编辑 .env
 ```
+
+`.env` 中各项含义见 `.env.example` 注释。公司 Windows 环境 mmdc 因 puppeteer 自带
+Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`（或 Edge），工具会
+自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §4.3。
 
 ## 使用
 

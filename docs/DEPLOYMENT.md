@@ -98,16 +98,20 @@ uv pip install --no-index --find-links wheels/ -e .   # 安装项目本体（提
 # 安装时跳过 Chromium 下载
 PUPPETEER_SKIP_DOWNLOAD=1 npm i -g @mermaid-js/mermaid-cli
 # Windows: 先 set PUPPETEER_SKIP_DOWNLOAD=1 再执行 npm i -g
-
-# 编写 puppeteer 配置，指向内网机器已有的 Chrome/Edge
-cat > puppeteer-config.json <<'EOF'
-{ "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }
-EOF
-# Windows 示例："executablePath": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 ```
 
-本工具渲染命令尚未暴露 `-p` 参数，离线部署时请在 `flowchart_agent/mermaid/render.py`
-的 `_mmdc_command()` 中为 mmdc 追加 `"-p", "puppeteer-config.json"`（一行改动）。
+然后在 `.env` 中把 `CHROME_PATH` 指向内网机器已有的 Chrome/Edge，工具会在每次渲染时
+自动生成 `puppeteer-config.json` 并以 `mmdc -p` 指定它，无需手工维护 JSON：
+
+```ini
+# Windows 示例（.env 中反斜杠无需转义）
+CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
+# 或用 Edge：CHROME_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+# macOS 示例：CHROME_PATH=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+生成的配置文件固定为 `<输出目录>/.puppeteer-config.json`，内容为
+`{"executablePath": "<CHROME_PATH>"}`；不设置 `CHROME_PATH` 时行为不变（使用 puppeteer 自带 Chromium）。
 
 **方案 B：离线拷贝 Chromium**：中转机正常安装后，把 puppeteer 缓存目录
 （`~/.cache/puppeteer`，Windows 为 `%USERPROFILE%\.cache\puppeteer`）整体拷贝到

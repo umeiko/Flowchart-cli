@@ -144,6 +144,7 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 - 路径有误时主 Agent 能自我纠正：`read_document` 报错自带相似文件候选，另有 `find_files` 模糊查找 Skill，要求自动重试 2~3 次后才向用户求助。
 - 图像输入（`TEXT_MODEL_VISION=true` 时启用）：用户可在 TUI 拖入图片（显示为彩色芯片，Backspace 整块删除）随消息发给主模型；`read_image` Skill 支持模型主动查看指定路径图片；`create_diagram` 接受 `image_path` 参考图；修改时把当前渲染图一并发给主模型。无视觉能力时 `read_image` 不下发，图片输入给出明确提示。
 - 支持对当前流程图的多轮自然语言修改（`modify_diagram` 在已有代码上修订，并重走渲染+视觉验证循环）。
+- 流式状态显示：主 Agent 回复与生成循环的 Mermaid 原文以流式增量实时滚动展示（Live 区域，段落切换时清场，结束后整段擦除）；LLM 客户端优先 stream=True，服务商不支持或流传输失败时自动退回强制非流式重试，界面无感。
 - 每次生成/修改的版本产物保存在 `output/v<n>/`，当前结果固定在 `output/current.*`。
 - Skill 抽象（name/description/inputSchema/handler）为最小级别，后续可平移到 MCP。
 
