@@ -32,6 +32,11 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_args(p_run)
 
     p_chat = sub.add_parser("chat", help="交互式对话：口述需求或给文档路径，可持续修改")
+    p_chat.add_argument(
+        "--yolo",
+        action="store_true",
+        help="免确认执行 Agent 的 shell 命令（谨慎）",
+    )
     _add_common_args(p_chat)
 
     args = parser.parse_args(argv)
@@ -45,8 +50,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "chat":
-        return run_chat(settings, args.output)
-    return _run_once(settings, args.document, args.output, args.style)
+        return run_chat(settings, args.output, yolo=args.yolo)
+    # run 模式属生成大类：产物落 <output>/generate，与检查侧的 <output>/check 对应
+    return _run_once(settings, args.document, args.output / "generate", args.style)
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -82,6 +88,7 @@ def _setup_logging(command: str, verbose: bool) -> None:
 
 
 def _run_once(settings, document: Path, output: Path, style_name: str | None = None) -> int:
+    output = output.resolve()  # 展示与日志统一用绝对路径
     if not document.is_file():
         print(f"错误：文档不存在：{document}", file=sys.stderr)
         return 2

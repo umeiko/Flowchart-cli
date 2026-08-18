@@ -1,5 +1,9 @@
 """主 Agent：对话式调度。通过 function calling 调用 Skill 完成用户意图。
 
+一级路由（router.py）：每条用户输入先分类为 generate / check / chat，
+check 类输入转交 CheckAgent（检查管线，产物落 output/check/），
+其余走本模块的 function calling 循环（产物落 output/generate/）。
+
 图片处理（TEXT_MODEL_VISION=true 时）：
 - 用户在 TUI 贴入的图片随本轮 user 消息发给模型（历史里只保留路径文本，
   避免 base64 每轮重复发送）；
@@ -13,9 +17,11 @@ import logging
 from pathlib import Path
 from typing import Callable
 
+from .check import CheckAgent
 from .config import Settings
 from .images import image_data_url, validate_image
 from .llm import LLMClient
+from .router import route_category
 from .session import DiagramSession
 from .skills import build_skills
 
@@ -42,10 +48,16 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
   目录中的风格模板，选最匹配的一个（create_diagram 的 style 参数或 set_style 切换）；
   现有模板都不匹配、或用户明确要求定制新风格时，用 create_style 生成新风格插件
   （成功后自动切换为当前风格）；都不需要时按默认风格处理；
+- 用户明确要求运行系统命令、做格式转换或批量文件处理等：run_command
+  （每条命令执行前会向用户请求确认；被拒绝后不要反复重试同一命令）；
 - 用户要求调整检视/验证强度（如"别核对内容了"、"不用看图验证"）：set_verification；
   视觉验证反复因文字识别错误（看不清、读错字）不通过时，也可主动降为 layout；
   用户表示没有视觉模型可用时降为 code（文本模型审查源码），并告知用户；
 - 用户想看当前图的代码或位置：get_current_diagram；
+- 用户要求调整中间文档（工作文档、已生成的 markdown/文本文件），或要求把内容
+  输出为其它格式的文件（markdown 表格、csv、清单等）：grep_files 定位内容、
+  replace_in_file 精确替换、write_file 新建/整体覆盖；改动前先 read_document
+  拿到原文，替换要有依据不要凭空改写；
 - 遇到超出你既有能力的专业任务（特定导出格式、行业图表规范、第三方工具对接等），
   或用户提到某个技能/技能包：先 list_skill_packs 发现 skills/ 目录中的技能包，
   有匹配的就用 use_skill 读取指引并严格遵照执行；没有就如实说明，用现有能力完成；
@@ -97,17 +109,27 @@ class MainAgent:
         session: DiagramSession,
         on_tool_call: Callable[[str, str], None] | None = None,
         on_delta: Callable[[str], None] | None = None,
+        output_root: Path | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        command_runner=None,
     ):
+        self._settings = settings
         self._llm = LLMClient(settings.text_model)
         self._vision = settings.text_model_vision
         self._pending = _PendingImages(self._vision)
+        # 检查管线（check 分支）：产物落 <output_root>/check/；懒加载
+        self._output_root = output_root
+        self._check_agent: CheckAgent | None = None
+        self._on_progress = on_progress  # 界面层进度提示（路由/检查项执行）
         # 主模型无视觉能力且配置了视觉模型时，用视觉模型提供 OCR 工具作为替代
         ocr_llm = (
             None
             if self._vision or settings.vision_model is None
             else LLMClient(settings.vision_model)
         )
-        skills = build_skills(session, self._pending, ocr_llm=ocr_llm)
+        skills = build_skills(
+            session, self._pending, ocr_llm=ocr_llm, command_runner=command_runner
+        )
         if not self._vision:  # 无视觉能力时不下发 read_image，避免模型误调
             skills = [s for s in skills if s.name != "read_image"]
         self._skills = {s.name: s for s in skills}
@@ -128,6 +150,20 @@ class MainAgent:
             f"，附带 {len(images)} 张图片" if images else "",
             history_text[:200].replace("\n", " "),
         )
+
+        # 一级路由：check 类输入转交检查管线，不进入对话上下文
+        category = route_category(self._llm, user_input, has_images=bool(images))
+        if category == "check":
+            if self._check_agent is None and self._output_root is not None:
+                self._check_agent = CheckAgent(self._settings, self._output_root)
+            if self._check_agent is not None:
+                if self._on_progress:
+                    self._on_progress("已路由到文档检查，正在分析素材…")
+                return self._check_agent.handle(
+                    user_input, images or [], on_progress=self._on_progress
+                )
+            logger.warning("[route] 无 output_root，check 分支回退主 Agent 流程")
+
         self._messages.append({"role": "user", "content": history_text})
         override = None
         if images and self._vision:

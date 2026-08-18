@@ -30,7 +30,8 @@ class DiagramSession:
     def __init__(self, settings: Settings, output_dir: str | Path):
         self._agent = FlowchartAgent(settings)
         self._settings = settings
-        self._output_dir = Path(output_dir)
+        # 绝对路径：工具返回与 CLI 展示的产物位置始终是绝对路径
+        self._output_dir = Path(output_dir).resolve()
         self._default_bg = settings.render_background
         self.requirement = ""
         self.current_code = ""

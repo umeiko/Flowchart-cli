@@ -1,8 +1,10 @@
-"""内置 Skill：文件读取/查找、读图/OCR、工作文档、流程图创建/修改/查看。"""
+"""内置 Skill：文件读取/查找/写入/替换/搜索、读图/OCR、工作文档、流程图创建/修改/查看。"""
 
 from __future__ import annotations
 
 import difflib
+import re
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
@@ -14,14 +16,102 @@ from .base import Skill
 
 _MAX_DOC_BYTES = 200 * 1024
 _MAX_FIND_RESULTS = 20
+_MAX_GREP_RESULTS = 50
 _MAX_FIND_WALK = 5000  # 最多遍历的文件数，防止在大目录里卡死
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def _writable_path(path: str, root: Path) -> Path:
+    """写操作安全边界：只允许写产物目录内的文件；相对路径按产物目录解析。"""
+    p = Path(path)
+    if not p.is_absolute():
+        p = root / p
+    p = p.resolve()
+    if p != root and root not in p.parents:
+        raise ValueError(f"只允许写入产物目录（{root}）内的文件：{path}")
+    return p
+
+
+def write_file(path: str, content: str, root: Path) -> str:
+    try:
+        p = _writable_path(path, root)
+    except ValueError as e:
+        return f"错误：{e}"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return f"文件已写入（{len(content)} 字符）：{p}"
+
+
+def replace_in_file(path: str, old_text: str, new_text: str, root: Path,
+                    replace_all: bool = False) -> str:
+    try:
+        p = _writable_path(path, root)
+    except ValueError as e:
+        return f"错误：{e}"
+    if not p.is_file():
+        return f"错误：文件不存在：{path}"
+    text = p.read_text(encoding="utf-8")
+    count = text.count(old_text)
+    if count == 0:
+        return f"错误：在 {path} 中未找到要替换的文本（注意需与文件内容完全一致）"
+    if count > 1 and not replace_all:
+        return (
+            f"错误：要替换的文本在 {path} 中出现 {count} 处，请提供更长的上下文"
+            "保证唯一匹配，或确认要全部替换（replace_all=true）。"
+        )
+    text = text.replace(old_text, new_text) if replace_all \
+        else text.replace(old_text, new_text, 1)
+    p.write_text(text, encoding="utf-8")
+    return f"已在 {p} 中完成 {count if replace_all else 1} 处替换。"
+
+
+def grep_files(pattern: str, directory: str = ".", file_glob: str = "") -> str:
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        return f"错误：正则表达式不合法：{e}"
+    root = Path(directory)
+    if not root.is_dir():
+        return f"错误：目录不存在：{directory}"
+    results: list[str] = []
+    walked = 0
+    for p in root.rglob(file_glob or "*"):
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in p.parts):
+            continue
+        if not p.is_file():
+            continue
+        walked += 1
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            continue  # 跳过二进制/非 UTF-8 文件
+        for i, line in enumerate(lines, 1):
+            if rx.search(line):
+                results.append(f"{p}:{i}: {line.strip()[:150]}")
+                if len(results) >= _MAX_GREP_RESULTS:
+                    break
+        if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
+            break
+    if not results:
+        return f"没有匹配 {pattern!r} 的内容（搜索范围：{root.resolve()}）"
+    suffix = f"（已达 {_MAX_GREP_RESULTS} 条上限）" if len(results) >= _MAX_GREP_RESULTS else ""
+    return f"找到 {len(results)} 处匹配{suffix}：\n" + "\n".join(results)
 
 
 class ImageQueue(Protocol):
     """read_image 写入、主 Agent 读取的图片队列（见 main_agent）。"""
 
     def add(self, path: str) -> str: ...
+
+
+class CommandRunner(Protocol):
+    """run_command 工具的执行后端（由界面层注入，见 chat_cli）。
+
+    负责：红框展示命令、用户确认（或 yolo 直通）、执行并捕获输出、
+    Ctrl+C 杀进程。返回给模型的文本（输出/错误/被拒说明）。
+    """
+
+    def run(self, command: str) -> str: ...
 
 
 def read_document(path: str) -> str:
@@ -80,9 +170,12 @@ def build_skills(
     session: DiagramSession,
     image_queue: ImageQueue,
     ocr_llm: LLMClient | None = None,
+    command_runner: CommandRunner | None = None,
 ) -> list[Skill]:
     """构建主 Agent 的工具表。ocr_llm 不为 None 时注册 ocr_image
-    （主模型无视觉能力时，用多模态验证模型做图片文字提取）。"""
+    （主模型无视觉能力时，用多模态验证模型做图片文字提取）；
+    command_runner 不为 None 时注册 run_command（界面层提供确认与进程管理）。"""
+    writable_root = session.output_dir  # write_file/replace_in_file 的写入边界
     skills = [
         Skill(
             name="read_document",
@@ -115,6 +208,71 @@ def build_skills(
                 "required": ["keyword"],
             },
             handler=find_files,
+        ),
+        Skill(
+            name="write_file",
+            description=(
+                "新建或整体覆盖一个文本文件（自动创建父目录）。"
+                "用于生成中间文档、或按用户要求输出其它格式的文件"
+                "（markdown、csv、纯文本等）。仅限产物目录内，相对路径按产物目录解析。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目标文件路径"},
+                    "content": {"type": "string", "description": "完整文件内容"},
+                },
+                "required": ["path", "content"],
+            },
+            handler=partial(write_file, root=writable_root),
+        ),
+        Skill(
+            name="replace_in_file",
+            description=(
+                "在文本文件中做精确字符串替换（先 read_document 拿到原文再改）。"
+                "old_text 必须与文件内容完全一致；多处匹配时需提供更长上下文或 "
+                "replace_all=true。仅限产物目录内。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目标文件路径"},
+                    "old_text": {"type": "string", "description": "要被替换的原文（精确匹配）"},
+                    "new_text": {"type": "string", "description": "替换后的新文本"},
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "是否替换全部匹配处，默认 false（仅一处，多处则报错）",
+                        "default": False,
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+            handler=partial(replace_in_file, root=writable_root),
+        ),
+        Skill(
+            name="grep_files",
+            description=(
+                "按正则表达式搜索文件内容，返回 文件:行号: 匹配行。"
+                "用于在中间文档/代码中定位内容（配合 replace_in_file 修改）。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "正则表达式，如 保存设置"},
+                    "directory": {
+                        "type": "string",
+                        "description": "搜索的起始目录，默认当前目录",
+                        "default": ".",
+                    },
+                    "file_glob": {
+                        "type": "string",
+                        "description": "文件名过滤，如 *.md；默认所有文件",
+                        "default": "",
+                    },
+                },
+                "required": ["pattern"],
+            },
+            handler=grep_files,
         ),
         Skill(
             name="read_image",
@@ -343,6 +501,28 @@ def build_skills(
             handler=session.write_working_doc,
         ),
     ]
+    if command_runner is not None:
+        skills.append(
+            Skill(
+                name="run_command",
+                description=(
+                    "运行一条单行 shell 命令并返回输出（执行前会向用户请求确认，"
+                    "用户可能拒绝）。用于用户明确要求的系统操作、格式转换、"
+                    "批量文件处理等；命令尽量只读，破坏性命令务必先向用户说明风险。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "要执行的单行 shell 命令",
+                        },
+                    },
+                    "required": ["command"],
+                },
+                handler=command_runner.run,
+            )
+        )
     if ocr_llm is not None:
         skills.append(
             Skill(
