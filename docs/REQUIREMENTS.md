@@ -16,6 +16,7 @@
 - 引入多模态模型对渲染图进行视觉校验，判断图表是否忠实表达原文档语义。
 - 整个流程自动化循环，带最大轮次限制与明确的失败退出。
 - 文本模型与多模态模型使用相互独立的 API 配置（不同 provider / base_url / key）。
+- 除生成图外，支持对已有文档/图片的**检视（检查图）**：按两级分类路由分发到对应检查 Agent，产出检查报告。
 
 ### 非目标（Non-Goals，本阶段）
 
@@ -25,11 +26,13 @@
 
 ## 2. 用户场景
 
-1. 用户提供一份流程描述文档（如 `test_datas/1.txt` 的登录流程文档），工具输出：
+1. 用户提供一份流程描述文档（如 `test_datas/gen/1.txt` 的登录流程文档），工具输出：
    - `*.mmd` Mermaid 源码文件
    - `*.png`（或 svg）渲染图
 2. 用户直接粘贴一段自然语言描述，工具交互式生成图表。
 3. 用户对结果不满意时，提供自然语言反馈，Agent 在上一轮结果基础上修正。
+4. 用户要求检视已有文档/图片（如"检查这份文档里的流程图和操作步骤是否一致"），
+   工具经两级路由分发到对应检查 Agent，输出 markdown 检查报告。
 
 ## 3. 系统架构
 
@@ -59,7 +62,9 @@
 | `llm/client.py` | OpenAI 兼容协议客户端封装（文本对话 + 带图对话 + function calling） |
 | `mermaid/extract.py` | 从 LLM 输出中提取 Mermaid 代码块 |
 | `mermaid/render.py` | 调用 mmdc 渲染，返回成功/失败与错误信息 |
-| `prompts.py` | 生成、修复、视觉验证三类 Prompt 模板 |
+| `prompts/` | Prompt 模板包：按子 Agent 分文件（generate/verify/style/restyle/ocr/route + check/ 检查管线） |
+| `router.py` | 一级分类器：用户输入 → generate / check / chat |
+| `check/` | 检查管线：types.py（检查类型注册表）、classifier.py（二级分类：图片描述+需求→检查类型）、agent.py（CheckAgent 执行检查并产出报告） |
 | `agent.py` | 子循环（FlowchartAgent）：生成→渲染→验证→修复；支持从已有代码修订 |
 | `session.py` | 对话会话状态：当前图、累积需求、版本化产物目录 |
 | `skills/` | 最小 Skill 抽象（name/description/inputSchema 与 MCP 同构）及内置 Skill |
@@ -83,6 +88,52 @@ DiagramSession ──► FlowchartAgent 子循环          ← 保证图的正�
 
 Skill 的 `parameters` 采用 JSON Schema，与 MCP 工具的 `inputSchema` 同构，
 为后续把能力暴露为 MCP server（或接入外部 MCP 工具）预留最小抽象。
+
+### 意图路由与检查管线
+
+每条用户输入先经一级分类（`router.py`，文本模型 JSON 输出）：
+generate（生成/修改图）走主 Agent function calling 流程；check（检视已有文档/图片）
+转交 `check/` 管线；chat 或分类不可信时回退主 Agent 流程（宁可不错分）。
+生成产物落 `output/generate/`，检查产物落 `output/check/`。
+
+检查管线的二级分类按"看图说话 → 文本分类"技术路线：
+
+```
+用户输入（检查需求 + 图片/路径）
+   │
+   ▼
+1. 视觉模型逐图生成结构化文字描述（prompts/check/describe.py）
+   │
+   ▼
+2. 文本模型按「需求 + 图片描述 + 检查项清单」选择要执行的检查项，
+   并提取输入中的文件路径（prompts/check/classify.py，JSON 输出）；
+   检查项清单在此步才向模型披露（渐进式披露）
+   │
+   ▼
+3. 每个检查项交给 ItemCheckAgent 子 Agent：视觉模型持真实图片 +
+   文档文本逐项比对；素材中没有该项适用类型的图片时直接判"不符合该分类"
+   │
+   ▼
+4. 汇总 CSV 报告 → output/check/v<n>/report.csv（过程产物与 run.log 同目录）
+```
+
+检查项注册表（`check/items.py`，9 项，每项对应 prompts/check/items/ 下的一个
+prompt 文件）：
+
+| 检查项 id | 覆盖需求 |
+|---|---|
+| `schematic_consistency` | 原理图与原理描述的一致性 |
+| `flowchart_correctness` | 流程图自身正确性 |
+| `flowchart_steps` | 流程图与操作步骤的一致性 |
+| `network_correctness` | 组网图自身正确性 |
+| `network_consistency` | 组网图与组网描述的一致性 |
+| `ui_correctness` | 界面截图正确性（与实际操作界面一致性） |
+| `ui_terminology` | 界面词与实际界面一致性 |
+| `ui_sensitive` | 截图敏感信息（公网 IP、账户信息等，对任何图片适用） |
+| `ui_steps` | 界面截图与操作步骤一致性 |
+
+每项结论为三值：通过 / 不通过 / 不符合该分类；用户明确指定检查项时只执行
+指定项，否则逐项全部检查。
 
 ## 4. 功能需求
 
@@ -168,8 +219,18 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
   避免大量素材原文长期占用对话上下文。
 - 支持对当前流程图的多轮自然语言修改（`modify_diagram` 在已有代码上修订，并重走渲染+视觉验证循环）。
 - 流式状态显示：主 Agent 回复与生成循环的 Mermaid 原文以流式增量实时滚动展示（Live 区域，段落切换时清场，结束后整段擦除）；LLM 客户端优先 stream=True，服务商不支持或流传输失败时自动退回强制非流式重试，界面无感。
-- 每次生成/修改的版本产物保存在 `output/v<n>/`，当前结果固定在 `output/current.*`。
+- 每次生成/修改的版本产物保存在 `output/generate/v<n>/`，当前结果固定在 `output/generate/current.*`；
+  检查任务产物在 `output/check/v<n>/`。
 - Skill 抽象（name/description/inputSchema/handler）为最小级别，后续可平移到 MCP。
+- 文件调整技能：`write_file`（新建/覆盖）、`replace_in_file`（精确替换）、
+  `grep_files`（内容检索），供主 Agent 随时调整中间文档或按用户要求输出
+  其它格式文件；写入路径限制在产物目录内，相对路径按产物目录解析。
+- 命令执行（`run_command`，冒险功能）：主 Agent 可应用户明确要求运行单行
+  shell 命令；界面层以红框展示命令、方向键选择「是/否」逐条确认，命令统一
+  在产物目录下执行，执行中 Ctrl+C 直接杀掉子进程组，超时自动终止；
+  `--yolo` 启动参数或会话内 `/yolo` 可切换免确认模式。
+- 产物路径统一为绝对路径（会话入口将 output 目录 resolve），CLI 展示与
+  日志中的生成位置均为绝对路径。
 
 ### FR-8 技能包系统（文件发现式，提示词型）
 - 技能包即文件：`skills/` 目录下每个带 frontmatter 的 `.md` 文件是一个技能包，
@@ -182,16 +243,37 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
   做成内置工具（`skills/builtin.py`）。
 - 无 frontmatter 的文件（如 skills/README.md）自动忽略；内置示例 drawio-export。
 
+### FR-9 文档检视（检查图大类）
+- 一级路由（`router.py`）：每条用户输入先分类 generate / check / chat；
+  check 转交检查管线，分类不可信时回退主 Agent 流程（宁可不错分）；
+  路由后界面层给出进度提示（已路由/正在描述图片/正在执行某项检查）。
+- 二级分类（`check/classifier.py`）：视觉模型先把图片转成结构化文字描述，
+  文本模型再按"用户需求 + 图片描述 + 检查项清单"选择要执行的检查项——
+  检查项清单在此步才向模型披露（渐进式披露）；用户明确指定检查项时只执行
+  指定项，否则逐项全部检查。同时从输入中提取文档/图片路径，路径不存在时
+  按文件名关键词自我纠正一次。
+- 逐项检查（`check/item_agent.py`）：每个检查项一个子 Agent（注册表见
+  `check/items.py`，prompt 按文件放在 `prompts/check/items/`），视觉模型持
+  真实图片 + 文档文本逐项比对；结论为三值：通过 / 不通过 / 不符合该分类
+  （素材中没有该项适用类型的图片时直接判不符合，不调用模型）。
+- 产物：`output/check/v<n>/report.csv`（检查项/图片/结果/问题说明，
+  UTF-8-BOM 兼容 Excel）；`source/` 子目录保存本次检查的原始素材副本
+  （图片与文档，同名自动加序号），方便溯源；过程产物（分类原始输出、
+  各图描述、各项检查原始输出、run.log）同目录。
+- 检查为一次性分析任务，不做修复 loop；未配置视觉模型时明确回复不可用。
+- 新增检查项 = `prompts/check/items/` 加一个 prompt 文件 + `check/items.py`
+  注册一行。
+
 ## 5. 非功能需求
 
 - **依赖最小化**：Python 侧仅 `openai` + `python-dotenv`；渲染依赖系统安装的 `mmdc`（`npm i -g @mermaid-js/mermaid-cli`）。
-- **可观测性**：每次生成/修改的完整过程写入 `output/v<n>/run.log`（run 模式为 `output/run.log`）——任务上下文（触发动作、检视模式、风格、背景等配置）、每轮生成/渲染/验证结果、每次 LLM 请求（模型、流式与否、消息数、耗时、输出规模）与 mmdc 渲染命令；chat 模式另有会话级 `output/chat.log` 记录全部用户输入与工具调用（含参数与结果摘要）。每轮中间产物（mmd/图片）与模型原始输出（`round_<n>_generate_raw.txt` / `round_<n>_verify_raw.txt`）落盘，可复盘分步生成过程。
+- **可观测性**：每次生成/修改的完整过程写入 `output/generate/v<n>/run.log`（run 模式为 `output/generate/run.log`），检查任务写入 `output/check/v<n>/run.log`——任务上下文（触发动作、检视模式、风格、背景等配置）、每轮生成/渲染/验证结果、每次 LLM 请求（模型、流式与否、消息数、耗时、输出规模）与 mmdc 渲染命令；chat 模式另有会话级 `output/chat.log` 记录全部用户输入与工具调用（含参数与结果摘要）。每轮中间产物（mmd/图片）与模型原始输出（`round_<n>_generate_raw.txt` / `round_<n>_verify_raw.txt`）落盘，可复盘分步生成过程。
 - **可测试性**：渲染、提取等纯逻辑模块可单测；LLM 调用集中在 client 层便于 mock。
 - **失败可读**：最终失败时给出人类可读的诊断（哪一步卡住、模型最后的批评意见）。
 
 ## 6. 验收标准
 
-1. 对 `test_datas/` 中至少 3 份流程文档，端到端跑出通过视觉验证的 PNG 图。
+1. 对 `test_datas/gen/` 中至少 3 份流程文档，端到端跑出通过视觉验证的 PNG 图。
 2. 人为注入一份有分支判断的文档，生成的图中分支逻辑与文档一致。
 3. 人为把 API key 改错，工具给出清晰报错而非 traceback 淹没。
 4. 渲染失败 loop 可演示：首轮生成非法 Mermaid 时能在后续轮次自行修复（可通过测试桩模拟）。

@@ -36,7 +36,7 @@ npm install -g @mermaid-js/mermaid-cli                # 全局渲染器
 cp .env.example .env   # 填入文本/多模态模型的 key 与 base_url
 
 # 5) 验证
-uv run flowchart-agent run test_datas/1.txt -o output
+uv run flowchart-agent run test_datas/gen/1.txt -o output
 ```
 
 日常使用：`uv run flowchart-agent chat`（或 `uv run python -m flowchart_agent chat`）。
@@ -129,7 +129,7 @@ CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
 node --version && mmdc --version          # Node 与渲染器
 uv run flowchart-agent --help             # 入口可用
 node scripts/mermaid_parse.mjs --help 2>/dev/null || true   # 预检脚本存在
-uv run flowchart-agent run test_datas/1.txt -o output       # 端到端
+uv run flowchart-agent run test_datas/gen/1.txt -o output       # 端到端
 ```
 
 端到端跑通标准：`output/final.mmd` 与 `output/final.png` 生成，`output/run.log` 无报错。

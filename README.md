@@ -10,12 +10,12 @@
 | 线性流程（登录） | 分支与回退（注册） |
 | :---: | :---: |
 | ![登录流程](docs/images/case_login.png) | ![注册流程](docs/images/case_register.png) |
-| 输入：`test_datas/1.txt`，1 轮通过 | 含判断分支与回退循环，1 轮通过 |
+| 输入：`test_datas/gen/1.txt`，1 轮通过 | 含判断分支与回退循环，1 轮通过 |
 
 <details>
 <summary>登录流程的输入文档与生成代码</summary>
 
-输入（`test_datas/1.txt` 节选）：
+输入（`test_datas/gen/1.txt` 节选）：
 
 ```
 开始 → 输入手机 → 输入密码 → 登录 → 登录成功 → 完成
@@ -43,6 +43,9 @@ flowchart TD
 - **风格生成 Agent**：现有模板都不满意时直接说"帮我做一个手绘风格的模板"，`create_style` 工具会自动起草风格插件、校验格式、试渲染，通过后写入 `styles/` 并立即启用
 - **风格转换 Agent**：`换成深色风格`、`按这个文档调整风格` —— 只改样式层不改内容，骨架校验机械保证节点/连线/文字零改动；风格来源可以是现有模板（`style_name`）或口述/文档输入的风格要求（`style_document`）
 - **技能包（Skill Packs）**：`skills/` 目录下每个带 frontmatter 的 `.md` 就是一个提示词型技能，主 Agent 遇到陌生领域任务时自己发现并遵照执行；从社区看到好用的 SKILL，丢进目录即可用。
+- **文档检视**：说"检查这份文档/这张图"即可——先按意图把输入路由到 生成图/检查图 两大类（产物分别落 `output/generate/` 与 `output/check/`）。检查侧由多模态模型先描述图片，主模型按"需求+图片描述"匹配检查项（用户明确指定则只查指定项，否则逐项全查），每项交给对应的检查子 Agent 逐项比对，结论为三值：通过 / 不通过 / 不符合该分类。覆盖：原理图与原理描述一致性、流程图正确性、流程图与操作步骤一致性、组网图正确性、组网图与组网描述一致性、界面截图正确性、界面词一致性、敏感信息（公网 IP、账户等）、截图与操作步骤一致性。报告为 `output/check/v<n>/report.csv`（Excel 可直接打开），原始素材（图片与文档）会复制到同目录 `source/` 下方便溯源。
+- **文件读写**：主 Agent 自带 `write_file` / `replace_in_file` / `grep_files`，可随时调整中间文档或按用户要求输出其它格式文件（写入仅限产物目录内，相对路径自动落在产物目录下）
+- **命令执行（冒险功能）**：用户明确要求时，主 Agent 可用 `run_command` 跑单行 shell 命令（格式转换、批量处理等）。每条命令默认红框展示、方向键选「是/否」确认，命令统一在产物目录下执行，执行中 Ctrl+C 直接杀掉进程；启动加 `--yolo` 或会话中输入 `/yolo` 可免确认（谨慎）
 
 ## 安装
 
@@ -82,14 +85,18 @@ Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`�
 # 交互模式（推荐）：口述需求或给文档路径，可持续对话修改
 uv run flowchart-agent chat -o output
 
+# 免确认执行 Agent 的 shell 命令（谨慎；会话中也可输入 /yolo 随时切换）
+uv run flowchart-agent chat -o output --yolo
+
 # 批处理模式：单文档 → 图，跑完退出（--style 指定 styles/ 目录中的风格模板）
-uv run flowchart-agent run test_datas/1.txt -o output
-uv run flowchart-agent run test_datas/1.txt -o output --style dark
+uv run flowchart-agent run test_datas/gen/1.txt -o output
+uv run flowchart-agent run test_datas/gen/1.txt -o output --style dark
 ```
 
 **过程日志**：每次生成/修改的详细过程（触发动作、每轮生成/渲染/验证、每次 LLM
-请求的耗时与规模、mmdc 命令）写入 `output/v<n>/run.log`（run 模式为
-`output/run.log`）；chat 模式的全部工具调用另记于会话级 `output/chat.log`。
+请求的耗时与规模、mmdc 命令）写入 `output/generate/v<n>/run.log`（run 模式为
+`output/generate/run.log`）；检查任务的详细过程与报告在 `output/check/v<n>/`
+（run.log + report.md）；chat 模式的全部工具调用另记于会话级 `output/chat.log`。
 
 ## 实现方案
 
@@ -109,13 +116,29 @@ flowchart_agent/
 ├── llm/client.py        # OpenAI 兼容客户端
 ├── mermaid/extract.py   # 从 LLM 输出提取 Mermaid 代码
 ├── mermaid/render.py    # mmdc 渲染 + 快速预检
-├── prompts.py           # 生成/修复/验证 Prompt
+├── prompts/             # Prompt 模板包（按子 Agent 分文件）
+│   ├── generate.py      #   生成/修复
+│   ├── verify.py        #   三档检视
+│   ├── style.py         #   风格生成
+│   ├── restyle.py       #   风格转换
+│   ├── ocr.py           #   OCR 工具
+│   ├── route.py         #   一级路由（生成/检查/闲聊）
+│   └── check/           #   检查管线（图像描述/二级分类/四类检查清单）
+├── router.py            # 一级分类器
+├── check/               # 检查管线（文档/图片检视）
+│   ├── items.py         #   检查项注册表（渐进式披露的技能清单）
+│   ├── classifier.py    #   二级分类器
+│   ├── item_agent.py    #   ItemCheckAgent：单项检查子 Agent
+│   └── agent.py         #   CheckAgent：编排素材、逐项派发、产出 CSV 报告
 ├── agent.py             # 生成-渲染-验证子循环
+├── style_agent.py       # 风格生成子 Agent
+├── restyle_agent.py     # 风格转换子 Agent
 ├── session.py           # 会话状态
 ├── skills/              # 最小 Skill 抽象
 │   ├── base.py          #   Skill 定义
-│   └── builtin.py       
-├── main_agent.py        # 主 Agent
+│   └── builtin.py       #   19+1 个内置工具
+├── skillpacks.py        # 技能包加载器（扫描 skills/*.md）
+├── main_agent.py        # 主 Agent（含一级路由）
 ├── styles.py            # 风格插件加载器（扫描 styles/*.md）
 ├── tui_chips.py         # TUI 处理
 ├── chat_cli.py          # 交互式 REPL
