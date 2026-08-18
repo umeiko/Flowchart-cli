@@ -1,0 +1,13 @@
+flowchart LR
+  internet["Internet 出口"]
+  fw["防火墙 FW-01<br>公网出口"]
+  core["核心交换机 SW-Core<br>VLAN10 / VLAN30"]
+  web1["Web 服务器 Web01<br>192.168.10.11"]
+  web2["Web 服务器 Web02<br>192.168.10.12"]
+  db["数据库 DB01<br>192.168.20.11"]
+  pc["办公终端 PC<br>192.168.10.11"]
+  internet --> fw --> core
+  core --> web1
+  core --> web2
+  core --> db
+  core --> pc

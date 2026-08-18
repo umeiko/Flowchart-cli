@@ -1,0 +1,28 @@
+交友（Make a Friend）流程文字文档
+一、流程概述
+开始 → 拨打电话（Place Phone Call） → 在家？ → [留言等待回电 / 邀约用餐 / 邀约热饮] → 开始友谊（Begin Friendship）
+（流程包含电话联系、见面邀约、共同活动等多条并行分支，最终均汇入“开始友谊”节点。）
+
+二、详细步骤说明
+开始（起止节点）：启动交友流程
+Place Phone Call / 拨打电话（处理节点）：给对方拨打电话
+At Home? / 在家？（判断节点）：判断对方是否在家
+Leave Message / 留言（处理节点）：不在家时留下留言信息
+Wait for Callback / 等待回电（处理节点）：等待对方回电
+Would you like to have a meal? / 是否愿意用餐？（判断节点）：邀约对方一起吃饭
+Dine Together? / 一起用餐？（判断节点）：确认能否共同用餐
+Do you enjoy a hot beverage? / 是否喜欢热饮？（判断节点）：询问是否喜欢热饮
+Case: coffee, tea, cocoa? / 咖啡、茶还是可可？（判断节点）：判断具体喜欢的热饮种类
+Have coffee / Have tea / Have cocoa / 喝咖啡/喝茶/喝可可（处理节点）：按对方选择准备相应热饮
+Counter / 计数器（处理节点）：Howard 改进版本中的循环计数起点
+Recreational activity? Tell one of your interests? / 休闲活动？说出一个兴趣？（判断节点）：了解对方的兴趣爱好
+Do I share that interest? / 我是否也有该兴趣？（判断节点）：判断双方是否有共同兴趣
+Why don't we do that together? / 为什么不一起做呢？（处理节点）：提出共同参与该活动的建议
+Partake in interest / 参与兴趣活动（处理节点）：一起参与该兴趣爱好
+Loop / 循环（判断节点）：未找到共同兴趣时进入循环
+Count / 计数（处理节点）：累计尝试次数
+Least objectionable action / 最不难接受的行动（处理节点）：选择双方最能接受的活动方案
+Begin Friendship / 开始友谊（起止节点）：交友成功，建立友谊
+
+三、流程说明
+本流程为带多分支判断与循环回退的复杂流程。主线通过电话联系发起，根据对方是否在家、是否愿意用餐、是否喜欢热饮等条件形成多个分支；右侧还包含一个兴趣匹配循环，若未找到共同兴趣则通过“Loop→Count→Least objectionable action”回退并重新尝试。所有分支最终汇聚到“Begin Friendship”节点，表示友谊建立。

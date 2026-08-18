@@ -1,0 +1,7 @@
+flowchart LR
+  sensor["温度传感器"] --> mcu["主控 MCU"]
+  mcu --> heater["加热器驱动"]
+  sensor --> fan["散热风扇"]
+  heater --> object["被控对象"]
+  fan --> object
+  object -.温度反馈.-> sensor
