@@ -141,13 +141,24 @@ def _run_wizard(env_path: Path) -> None:
     v_api_key = _ask("视觉模型 API Key", default=api_key)
     v_model = _ask("视觉模型名称（多模态，如 qwen-vl-max、gpt-4o）")
 
-    # Chrome/Edge 自动嗅探：嗅到就不问
+    # Chrome/Edge 自动嗅探：嗅到就不问；嗅不到让用户手动输入并校验
     chrome = _sniff_browser()
     if chrome:
         print(f"\n已自动找到浏览器：{chrome}")
     else:
         print("\n没有自动找到 Chrome/Edge，画图渲染需要它。")
-        chrome = _ask("请粘贴 chrome.exe 的完整路径（留空则稍后在 .env 里配 CHROME_PATH）")
+        while True:
+            chrome = _ask("请粘贴 chrome.exe 的完整路径（留空跳过）")
+            if not chrome:
+                print("警告：本次未配置浏览器，生成图片的渲染功能将不可用。")
+                print("请先安装 Chrome（https://www.google.cn/chrome/），装好后在")
+                print(".env 的 CHROME_PATH 填入 chrome.exe 的完整路径即可。")
+                break
+            if Path(chrome).is_file():
+                break
+            print(f"配置失败：找不到文件 {chrome}。")
+            print("请检查路径是否粘贴正确；还没安装 Chrome 的话请先安装")
+            print("（也可以先留空跳过，装好后再到 .env 里配 CHROME_PATH）。")
 
     # 连通性检测（可选跳过）
     print("\n正在测试主模型 API 连通性（10 秒内）…")
