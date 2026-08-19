@@ -4,7 +4,7 @@
 写给主 Agent 的操作手册。主 Agent 用 list_skill_packs 发现、use_skill 读取
 正文后按指引执行（配合 read_document / find_files / 流程图工具完成）。
 适合接入社区流传的 SKILL.md 式技能包；需要执行脚本的技能不在本系统范围内。
-目录可用 FLOWCHART_SKILL_DIR 环境变量覆盖，默认 ./skills。
+目录可用 FLOWCHART_SKILL_DIR 环境变量覆盖；默认 ./skills（冻结时为 exe 旁 skills/）。
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import runtime
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,11 @@ class SkillPack:
 
 
 def skill_packs_dir() -> Path:
-    return Path(os.getenv("FLOWCHART_SKILL_DIR", "skills"))
+    """技能包目录：FLOWCHART_SKILL_DIR 覆盖 > 冻结时 exe 旁 skills/ > CWD 下 skills/。"""
+    env = os.getenv("FLOWCHART_SKILL_DIR")
+    if env:
+        return Path(env)
+    return runtime.app_dir() / "skills" if runtime.is_frozen() else Path("skills")
 
 
 def load_skill_packs(directory: Path | None = None) -> dict[str, SkillPack]:

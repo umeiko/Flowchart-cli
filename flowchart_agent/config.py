@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import runtime
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -63,7 +65,15 @@ def _load_vision_model() -> ModelConfig | None:
 
 
 def load_settings(env_path: str | Path | None = None) -> Settings:
-    load_dotenv(env_path or ".env")
+    if env_path is None:
+        # 冻结（离线包）时优先读 exe 旁边的 .env，其次 CWD；源码运行维持 ./.env
+        candidates = (
+            [runtime.app_dir() / ".env", Path(".env")]
+            if runtime.is_frozen()
+            else [Path(".env")]
+        )
+        env_path = next((p for p in candidates if p.is_file()), candidates[-1])
+    load_dotenv(env_path)
     return Settings(
         text_model=ModelConfig(
             name=_require("TEXT_MODEL_NAME"),

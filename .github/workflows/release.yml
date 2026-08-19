@@ -1,0 +1,102 @@
+# 离线发布包构建：PyInstaller 冻结 + vendor(node/mermaid-cli) 组装 → GitHub Release。
+# 触发：推送 v* tag（自动建 Release 并挂产物），或 Actions 页面手动运行（只传 artifact）。
+# 本工作流不调用任何 LLM API；渲染冒烟只用 vendor 里的 node + mmdc 渲一张样例图。
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # 创建 Release 并上传产物
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win-x64
+            exe: dist/bin/flowchart-agent.exe
+          - os: macos-latest
+            platform: macos-arm64
+            exe: dist/bin/flowchart-agent
+          - os: macos-15-intel  # macos-13 已于 2025-12 退役，Intel 用 macos-15-intel
+            platform: macos-x64
+            exe: dist/bin/flowchart-agent
+          # 需要 Linux 包时取消注释：
+          # - os: ubuntu-latest
+          #   platform: linux-x64
+          #   exe: dist/bin/flowchart-agent
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 Python 依赖与 PyInstaller
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: PyInstaller 构建
+        run: pyinstaller packaging/flowchart-agent.spec --distpath dist/bin --workpath build/pyinstaller --noconfirm
+
+      - name: exe 冒烟（--help，不触网）
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8  # Windows runner 重定向 stdout 默认 cp1252，中文帮助需 UTF-8
+        run: ${{ matrix.exe }} --help >/dev/null && echo "exe ok"
+
+      - name: 构建 launcher.exe（首次配置向导，仅 Windows 包附带）
+        if: matrix.platform == 'win-x64'
+        run: pyinstaller packaging/launcher.spec --distpath dist/bin --workpath build/pyinstaller-launcher --noconfirm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 组装离线发布包（下载 node 独立包 + npm 装 mermaid-cli/parse 依赖）
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python packaging/make_bundle.py --platform ${{ matrix.platform }} --exe "${{ matrix.exe }}"
+
+      - name: vendor 渲染冒烟（node + mmdc 渲样例图，不调 API）
+        shell: bash
+        run: |
+          set -e
+          B="dist/flowchart-agent-${{ matrix.platform }}"
+          NODE="$B/vendor/node/node"; [ -f "$NODE" ] || NODE="$B/vendor/node/node.exe"
+          printf 'flowchart LR\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n' > /tmp/smoke.mmd
+          CHROME=""
+          for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+                   "/c/Program Files/Google/Chrome/Application/chrome.exe" \
+                   "/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"; do
+            [ -f "$c" ] && CHROME="$c" && break
+          done
+          if [ -z "$CHROME" ]; then echo "::warning::未找到 Chrome/Edge，跳过渲染冒烟"; exit 0; fi
+          # git-bash 路径（/c/...）Windows 进程不认：转成正斜杠 Windows 路径（C:/...，JSON 安全）
+          command -v cygpath >/dev/null && CHROME="$(cygpath -m "$CHROME")"
+          printf '{"executablePath": "%s"}' "$CHROME" > /tmp/pptr.json
+          "$NODE" "$B/vendor/mermaid-cli/node_modules/@mermaid-js/mermaid-cli/src/cli.js" \
+            -i /tmp/smoke.mmd -o /tmp/smoke.png -p /tmp/pptr.json
+          test -s /tmp/smoke.png && echo "vendor 渲染 ok"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowchart-agent-${{ matrix.platform }}
+          path: |
+            dist/flowchart-agent-${{ matrix.platform }}.zip
+            dist/flowchart-agent-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+
+      - name: 挂到 GitHub Release（仅 tag 触发）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/flowchart-agent-${{ matrix.platform }}.zip
+            dist/flowchart-agent-${{ matrix.platform }}.tar.gz

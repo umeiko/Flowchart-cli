@@ -266,7 +266,8 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 
 ## 5. 非功能需求
 
-- **依赖最小化**：Python 侧仅 `openai` + `python-dotenv`；渲染依赖系统安装的 `mmdc`（`npm i -g @mermaid-js/mermaid-cli`）。
+- **依赖最小化**：Python 侧仅 `openai` + `python-dotenv` + TUI 两库；渲染依赖 `mmdc`（源码运行用系统安装，离线包内置 vendor/node + mermaid-cli）。
+- **离线分发**：PyInstaller 单文件冻结（`packaging/flowchart-agent.spec`）+ `packaging/make_bundle.py` 组装 vendor（Node 独立二进制、mermaid-cli 跳过 Chromium、语法预检依赖）与 styles/skills 模板，产出 win-x64 zip 与 macOS tar.gz；`.github/workflows/release.yml` 在 `v*` tag 上自动构建并挂 Release。冻结后 styles/skills/.env 默认解析到 exe 旁目录（`runtime.py`），渲染用浏览器自动探测（CHROME_PATH 优先）。CI 不调用任何 LLM API。
 - **可观测性**：每次生成/修改的完整过程写入 `output/generate/v<n>/run.log`（run 模式为 `output/generate/run.log`），检查任务写入 `output/check/v<n>/run.log`——任务上下文（触发动作、检视模式、风格、背景等配置）、每轮生成/渲染/验证结果、每次 LLM 请求（模型、流式与否、消息数、耗时、输出规模）与 mmdc 渲染命令；chat 模式另有会话级 `output/chat.log` 记录全部用户输入与工具调用（含参数与结果摘要）。每轮中间产物（mmd/图片）与模型原始输出（`round_<n>_generate_raw.txt` / `round_<n>_verify_raw.txt`）落盘，可复盘分步生成过程。
 - **可测试性**：渲染、提取等纯逻辑模块可单测；LLM 调用集中在 client 层便于 mock。
 - **失败可读**：最终失败时给出人类可读的诊断（哪一步卡住、模型最后的批评意见）。

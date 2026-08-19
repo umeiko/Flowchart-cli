@@ -20,6 +20,8 @@ from .styles import get_style, load_styles
 
 
 def main(argv: list[str] | None = None) -> int:
+    _fix_console_encoding()  # 必须在 parse_args 之前：--help 打印中文帮助时 stdout
+    # 可能已被重定向（Windows 下回退 GBK/cp1252 编码），提前切 UTF-8 防止崩退出码
     parser = argparse.ArgumentParser(
         prog="flowchart-agent",
         description="根据自然语言生成 Mermaid 流程图（生成-渲染-验证循环）",
@@ -40,7 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_args(p_chat)
 
     args = parser.parse_args(argv)
-    _fix_console_encoding()
     _setup_logging(args.command, args.verbose)
 
     try:

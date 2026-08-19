@@ -9,18 +9,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import runtime
+
 logger = logging.getLogger(__name__)
 
-# scripts/mermaid_parse.mjs 位于项目根目录（本文件上三级）
-_PARSE_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mermaid_parse.mjs"
-
-# 配置 CHROME_PATH 时在输出目录生成的 puppeteer 配置文件名
+# 配置 CHROME_PATH 时（或离线包自动探测到浏览器时）在输出目录生成的 puppeteer 配置文件名
 _PUPPETEER_CONFIG_NAME = ".puppeteer-config.json"
 
 # width="auto" 时自然宽度的上限：超过则压缩到该值（防止极端宽图撑爆截图纹理上限）
@@ -68,9 +65,11 @@ def render_mermaid(
     - 数字字符串：固定视口宽度（旧行为）；
     - None：mmdc 默认视口（800）。
     """
-    if shutil.which("mmdc") is None:
+    if runtime.mmdc_command(["--version"]) is None:
         raise MermaidCliNotFoundError(
-            "未找到 mmdc 命令，请先安装：npm install -g @mermaid-js/mermaid-cli"
+            "未找到 mmdc（Mermaid 渲染器）。源码运行请先安装："
+            "npm install -g @mermaid-js/mermaid-cli；离线包请确认 exe 旁边"
+            "存在 vendor/mermaid-cli 目录，或设置 MMDC_PATH 环境变量。"
         )
 
     output_dir = Path(output_dir)
@@ -171,10 +170,12 @@ def _mmdc_command(
     fmt: str = "png",
     width: str | None = None,
 ) -> list[str]:
-    """构造 mmdc 调用命令。Windows 上 mmdc 是 .cmd 批处理，CreateProcess 无法
-    直接执行，必须经 cmd /c 调用。scale（-s）与 width（-w）只对 PNG 传，
-    SVG 是矢量图，自然宽度不受视口限制。"""
-    args = ["mmdc", "-i", str(mmd_path), "-o", str(image_path), "-b", background]
+    """构造 mmdc 调用命令（经 runtime 解析 vendor/PATH）。scale（-s）与 width（-w）
+    只对 PNG 传，SVG 是矢量图，自然宽度不受视口限制。"""
+    args = ["-i", str(mmd_path), "-o", str(image_path), "-b", background]
+    # 离线包（冻结）未配 CHROME_PATH 时自动探测系统 Chrome/Edge：
+    # vendor 的 mermaid-cli 不带自带 Chromium，必须指定 executablePath
+    chrome_path = chrome_path or runtime.detect_chrome()
     if chrome_path:
         config = _write_puppeteer_config(mmd_path.parent, chrome_path)
         args += ["-p", str(config)]
@@ -183,18 +184,21 @@ def _mmdc_command(
             args += ["-s", str(scale)]
         if width and width != "auto":
             args += ["-w", str(width)]
-    if sys.platform == "win32":
-        return ["cmd", "/c", *args]
-    return args
+    cmd = runtime.mmdc_command(args)
+    if cmd is None:  # 调用方已检查，理论不可达
+        raise MermaidCliNotFoundError("未找到 mmdc（Mermaid 渲染器）。")
+    return cmd
 
 
 def _quick_parse_check(mmd_path: Path) -> str | None:
     """mermaid.parse 预检。返回 None 表示通过（或预检不可用，交给 mmdc 兜底）。"""
-    if shutil.which("node") is None or not _PARSE_SCRIPT.is_file():
+    node = runtime.find_node()
+    script = runtime.parse_script()
+    if node is None or script is None:
         return None
     try:
         proc = subprocess.run(
-            ["node", str(_PARSE_SCRIPT), str(mmd_path)],
+            [node, str(script), str(mmd_path)],
             capture_output=True,
             text=True,
             timeout=30,

@@ -1,6 +1,6 @@
 [project]
 name = "flowchart-ai"
-version = "1.0.0"
+version = "1.1.0"
 description = "自然语言生成 Mermaid 流程图的循环式 Agent（生成 → 渲染校验 → 视觉验证 → 反馈修复）"
 readme = "README.md"
 requires-python = ">=3.10"

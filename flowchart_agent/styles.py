@@ -3,7 +3,7 @@
 每个 .md 文件用 frontmatter 定义风格（name/description/background/init），
 正文是给生成模型的补充风格说明。主 Agent 通过 list_styles 自行发现、
 按需选用；用户往目录里丢一个 .md 文件即可新增风格，无需改代码。
-目录可用 FLOWCHART_STYLE_DIR 环境变量覆盖，默认 ./styles。
+目录可用 FLOWCHART_STYLE_DIR 环境变量覆盖；默认 ./styles（冻结时为 exe 旁 styles/）。
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import runtime
 
 
 @dataclass(frozen=True)
@@ -29,7 +31,11 @@ class Style:
 
 
 def styles_dir() -> Path:
-    return Path(os.getenv("FLOWCHART_STYLE_DIR", "styles"))
+    """风格目录：FLOWCHART_STYLE_DIR 覆盖 > 冻结时 exe 旁 styles/ > CWD 下 styles/。"""
+    env = os.getenv("FLOWCHART_STYLE_DIR")
+    if env:
+        return Path(env)
+    return runtime.app_dir() / "styles" if runtime.is_frozen() else Path("styles")
 
 
 def load_styles(directory: Path | None = None) -> dict[str, Style]:

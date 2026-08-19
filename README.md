@@ -49,13 +49,16 @@ flowchart TD
 
 ## 安装
 
+> **不想装工具链？** 直接从 GitHub Release 下载离线包（内置 Node 与 mermaid-cli，
+> 解压即用，只需系统 Chrome/Edge），见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §2。
+
 ```bash
 # 1) Python 依赖（推荐 uv，按 uv.lock 锁定版本；会自动创建 .venv）
 uv sync
 # 无 uv 时：python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
 # 2) Node.js ≥ 18（渲染与语法预检的运行时）
-brew install node        # macOS；Windows 用官网安装包，内网离线装法见部署文档 §4.2
+brew install node        # macOS；Windows 用官网安装包，内网离线装法见部署文档 §5.2
 
 # 3) Mermaid 渲染器（全局安装，提供 mmdc 命令）
 npm install -g @mermaid-js/mermaid-cli
@@ -77,7 +80,7 @@ cp .env.example .env
 
 `.env` 中各项含义见 `.env.example` 注释。公司 Windows 环境 mmdc 因 puppeteer 自带
 Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`（或 Edge），工具会
-自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §4.3。
+自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §5.3。
 
 ## 使用
 
@@ -140,9 +143,11 @@ flowchart_agent/
 ├── skillpacks.py        # 技能包加载器（扫描 skills/*.md）
 ├── main_agent.py        # 主 Agent（含一级路由）
 ├── styles.py            # 风格插件加载器（扫描 styles/*.md）
+├── runtime.py           # 冻结感知 + node/mmdc/浏览器解析（离线包 vendor）
 ├── tui_chips.py         # TUI 处理
 ├── chat_cli.py          # 交互式 REPL
 └── cli.py               # 命令行入口
+packaging/               # 离线包构建（PyInstaller spec + make_bundle.py）
 styles/                  # 作图风格插件（.md 文件，可自行新增）
 scripts/
 └── mermaid_parse.mjs    # Node 侧语法预检
