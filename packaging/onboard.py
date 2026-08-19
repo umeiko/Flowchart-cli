@@ -1,11 +1,12 @@
 """launcher.exe 的配置向导（仅 Windows 离线包使用，独立于 flowchart_agent 主包）。
 
 只用标准库，可独立冻结成极小的 launcher.exe。逻辑：
-- exe 旁存在合法 .env（TEXT_MODEL_NAME / TEXT_MODEL_API_KEY / TEXT_MODEL_BASE_URL
-  三项齐全）：直接启动同目录的 flowchart-agent.exe 进入 chat；
-- 否则进入引导：依次收集 base_url、api_key、模型名；Chrome/Edge 地址自动嗅探，
-  嗅探到就不再询问；写盘 exe 旁的 .env 后启动 chat；
-- 末尾提示：更多配置（视觉模型、检视强度等）自行编辑 .env，参考 .env.example。
+- exe 旁存在合法 .env（主模型 + 视觉模型共六项齐全）：直接启动同目录的
+  flowchart-agent.exe 进入 chat；
+- 否则进入引导：第 1 步主模型（base_url、api_key、模型名），第 2 步视觉模型
+  （必填，默认复用主模型的地址与 Key）；Chrome/Edge 地址自动嗅探，嗅探到就
+  不再询问；写盘 exe 旁的 .env 后启动 chat；
+- 末尾提示：更多配置（检视强度、渲染参数等）自行编辑 .env，参考 .env.example。
 
 构建：pyinstaller packaging/launcher.spec（CI 仅在 win-x64 任务中执行）。
 源码调试：python packaging/onboard.py（此时以当前目录为工作目录）。
@@ -22,12 +23,20 @@ from pathlib import Path
 
 _ENV_TEMPLATE = """\
 # Flowchart Agent 配置（由 launcher 向导生成）
-# 更多可选项（视觉模型 VISION_MODEL_*、检视强度 VERIFY_MODE、渲染参数
-# RENDER_SCALE / RENDER_WIDTH 等）请参照 .env.example 自行添加。
+# 更多可选项（检视强度 VERIFY_MODE、渲染参数 RENDER_SCALE / RENDER_WIDTH 等）
+# 请参照 .env.example 自行添加。
 
+# 主模型（文本生成）
 TEXT_MODEL_NAME={model}
 TEXT_MODEL_API_KEY={api_key}
 TEXT_MODEL_BASE_URL={base_url}
+
+# 视觉模型（多模态：看图生成、图像检视、OCR）
+VISION_MODEL_NAME={v_model}
+VISION_MODEL_API_KEY={v_api_key}
+VISION_MODEL_BASE_URL={v_base_url}
+
+# 渲染用浏览器（自动嗅探；改其它浏览器请修改此路径）
 CHROME_PATH={chrome}
 """
 
@@ -86,7 +95,7 @@ def _ask(prompt: str, default: str = "") -> str:
 
 
 def _config_valid(env_path: Path) -> bool:
-    """三项必填齐全才算合法配置（不联网验证，连接性在引导流程里可选检测）。"""
+    """主模型 + 视觉模型共六项齐全才算合法配置（不联网验证，连接性在引导流程里检测）。"""
     if not env_path.is_file():
         return False
     values: dict[str, str] = {}
@@ -95,8 +104,10 @@ def _config_valid(env_path: Path) -> bool:
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             values[k.strip()] = v.strip()
-    return all(values.get(k) for k in
-               ("TEXT_MODEL_NAME", "TEXT_MODEL_API_KEY", "TEXT_MODEL_BASE_URL"))
+    return all(values.get(k) for k in (
+        "TEXT_MODEL_NAME", "TEXT_MODEL_API_KEY", "TEXT_MODEL_BASE_URL",
+        "VISION_MODEL_NAME", "VISION_MODEL_API_KEY", "VISION_MODEL_BASE_URL",
+    ))
 
 
 def _check_connectivity(base_url: str, api_key: str) -> bool:
@@ -113,12 +124,22 @@ def _check_connectivity(base_url: str, api_key: str) -> bool:
 def _run_wizard(env_path: Path) -> None:
     print("=" * 52)
     print("  Flowchart Agent 首次配置向导")
-    print("  只需要填 3 项模型配置，其余都有默认值。")
+    print("  第 1 步（必选）：主模型 —— 负责理解和画图的语言模型")
     print("=" * 52)
     print()
-    base_url = _ask("模型 API 地址（BASE_URL，如 https://api.openai.com/v1）")
-    api_key = _ask("模型 API Key（输入时会显示，注意周围没人再看）")
-    model = _ask("模型名称（如 gpt-4o-mini、deepseek-v3）")
+    base_url = _ask("主模型 API 地址（BASE_URL，如 https://api.openai.com/v1）")
+    api_key = _ask("主模型 API Key（输入时会显示，注意周围没人再看）")
+    model = _ask("主模型名称（如 gpt-4o-mini、deepseek-v3）")
+
+    # 第 2 步：视觉模型必填；默认复用主模型的地址与 Key，回车即可
+    print()
+    print("-" * 52)
+    print("  第 2 步（必填）：视觉模型 —— 负责看图（图像检视/看图生成/OCR）")
+    print("  与主模型同一家服务时直接回车用默认值即可")
+    print("-" * 52)
+    v_base_url = _ask("视觉模型 API 地址", default=base_url)
+    v_api_key = _ask("视觉模型 API Key", default=api_key)
+    v_model = _ask("视觉模型名称（多模态，如 qwen-vl-max、gpt-4o）")
 
     # Chrome/Edge 自动嗅探：嗅到就不问
     chrome = _sniff_browser()
@@ -129,7 +150,7 @@ def _run_wizard(env_path: Path) -> None:
         chrome = _ask("请粘贴 chrome.exe 的完整路径（留空则稍后在 .env 里配 CHROME_PATH）")
 
     # 连通性检测（可选跳过）
-    print("\n正在测试 API 连通性（10 秒内）…")
+    print("\n正在测试主模型 API 连通性（10 秒内）…")
     if _check_connectivity(base_url, api_key):
         print("连接成功！")
     else:
@@ -140,13 +161,16 @@ def _run_wizard(env_path: Path) -> None:
 
     env_path.write_text(
         _ENV_TEMPLATE.format(
-            model=model, api_key=api_key, base_url=base_url, chrome=chrome
+            model=model, api_key=api_key, base_url=base_url,
+            v_model=v_model, v_api_key=v_api_key, v_base_url=v_base_url,
+            chrome=chrome,
         ),
         encoding="utf-8",
     )
     print(f"\n配置已写入：{env_path}")
-    print("更多配置（视觉模型、检视强度、渲染参数等）请用记事本编辑该文件，")
+    print("更多配置（检视强度、渲染参数等）请用记事本编辑该文件，")
     print("可参照同目录的 .env.example。")
+    print("提示：若主模型本身支持看图，在 .env 加 TEXT_MODEL_VISION=true 即可让它直接读图。")
 
 
 def main() -> int:
