@@ -428,23 +428,42 @@ class _CommandRunner:
 def _print_banner(
     output_dir: Path, settings: Settings, yolo: bool = False, session_engine: str = ""
 ) -> None:
-    vision = (
-        "[green]已开启[/green]" if settings.text_model_vision else "[dim]未开启[/dim]"
-    )
-    yolo_line = (
-        "\n[red bold]yolo 模式：Agent 的 shell 命令将免确认直接执行[/red bold]"
-        if yolo
-        else ""
-    )
-    console.print(
-        Panel(
-            f"[bold cyan]Flowchart AI Agent[/bold cyan]  [dim]v{__version__}[/dim]\n\n"
-            "自然语言 → 流程图/架构图  [dim]（生成 · 渲染校验 · 视觉验证循环）[/dim]\n"
-            f"[dim]出图引擎 {session_engine}（/engine 切换） · 产物目录 {output_dir} · "
-            f"主模型图像输入 {vision} · /help 查看命令 · Ctrl+D 退出[/dim]"
-            f"{yolo_line}",
-            border_style="cyan",
-            padding=(1, 2),
+    """启动横幅：极简数字小助手吉祥物 + 右侧状态栏（markup 由 rich 渲染）。
+
+    左列吉祥物全部是单宽字符（ASCII + 制表符），ljust 对齐后拼接右侧信息；
+    中文只出现在右列，不参与左列对齐计算。
+    """
+    vision = "已开启" if settings.text_model_vision else "未开启"
+    mascot = [
+        "         [bright_cyan]✧ ˚ · .[/]",
+        "        [bright_blue]╭───────╮[/]",
+        "        [bright_blue]│ [bright_white]●   ●[bright_blue] │[/]",
+        "        [bright_blue]│ [bright_white]  v  [bright_blue] │[/]",
+        "        [bright_blue]╰───┬───╯[/]",
+        "       [bright_cyan]╭────┴────╮[/]",
+        "       [bright_cyan]│ [bright_blue]  < /> [bright_cyan] │[/]",
+        "       [bright_cyan]╰─────────╯[/]",
+    ]
+    # 右列与吉祥物逐行对齐；可见宽度 ljust 到 21（左列最长 18）
+    info = [
+        "",
+        f"[bold bright_white]Hi, I'm Flowchart AI Agent.[/]  [bright_black]v{__version__}[/]",
+        "",
+        "[bright_black]自然语言 → 流程图/架构图（生成 · 渲染校验 · 视觉验证循环）[/]",
+        "",
+        f"[bright_cyan]▶[/] [bright_white]出图引擎 {session_engine}（/engine 切换） · "
+        f"主模型图像输入 {vision}[/]",
+        "[bright_cyan]▶[/] [bright_white]/help 查看命令 · Ctrl+D 退出[/]",
+        f"[bright_black]{output_dir}[/]",
+    ]
+    console.print()
+    for left, right in zip(mascot, info):
+        visible = left.replace("[bright_cyan]", "").replace("[bright_blue]", "") \
+            .replace("[bright_white]", "").replace("[/]", "")
+        console.print(left + " " * (21 - len(visible)) + right)
+    console.print()
+    if yolo:
+        console.print(
+            "[red bold]yolo 模式：Agent 的 shell 命令将免确认直接执行[/red bold]"
         )
-    )
 
