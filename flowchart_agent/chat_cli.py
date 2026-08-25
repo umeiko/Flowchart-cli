@@ -38,7 +38,12 @@ from . import __version__
 from .config import Settings
 from .main_agent import MainAgent
 from .session import DiagramSession
-from .tui_chips import ChipColorProcessor, ChipRegistry, make_key_bindings
+from .tui_chips import (
+    ChipColorProcessor,
+    ChipRegistry,
+    create_loose_paste_input,
+    make_key_bindings,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -59,7 +64,7 @@ _PT_STYLE = PtStyle.from_dict(
 )
 
 _TOOLBAR = HTML(
-    " <b>Enter</b> 发送 · <b>↑/↓</b> 历史 · <b>Ctrl+C</b> 取消 · <b>Ctrl+D</b> 退出 · 拖入文件变芯片 "
+    " <b>Enter</b> 发送 · <b>↑/↓</b> 历史 · <b>Ctrl+C</b> 取消 · <b>Ctrl+D</b> 退出 "
 )
 
 _HELP = """\
@@ -213,6 +218,10 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
 
 
 def _make_prompt_session(chips: ChipRegistry) -> PromptSession:
+    kwargs: dict = {}
+    paste_input = create_loose_paste_input()  # Windows：单行粘贴也识别为粘贴事件
+    if paste_input is not None:
+        kwargs["input"] = paste_input
     return PromptSession(
         history=FileHistory(str(_HISTORY_FILE)),
         auto_suggest=AutoSuggestFromHistory(),
@@ -220,6 +229,7 @@ def _make_prompt_session(chips: ChipRegistry) -> PromptSession:
         style=_PT_STYLE,
         key_bindings=make_key_bindings(chips),
         input_processors=[ChipColorProcessor()],
+        **kwargs,
     )
 
 
