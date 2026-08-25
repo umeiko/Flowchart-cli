@@ -4,8 +4,8 @@
 - exe 旁存在合法 .env（主模型 + 视觉模型共六项齐全）：直接启动同目录的
   flowchart-agent.exe 进入 chat；
 - 否则进入引导：第 1 步主模型（base_url、api_key、模型名），第 2 步视觉模型
-  （必填，默认复用主模型的地址与 Key）；Chrome/Edge 地址自动嗅探，嗅探到就
-  不再询问；写盘 exe 旁的 .env 后启动 chat；
+  （必填，默认复用主模型的地址与 Key）；Chrome/Edge 与 draw.io 桌面版地址
+  自动嗅探，嗅探到就不再询问；写盘 exe 旁的 .env 后启动 chat；
 - 末尾提示：更多配置（检视强度、渲染参数等）自行编辑 .env，参考 .env.example。
 
 构建：pyinstaller packaging/launcher.spec（CI 仅在 win-x64 任务中执行）。
@@ -38,7 +38,16 @@ VISION_MODEL_BASE_URL={v_base_url}
 
 # 渲染用浏览器（自动嗅探；改其它浏览器请修改此路径）
 CHROME_PATH={chrome}
-"""
+
+{drawio_block}"""
+
+# draw.io 桌面版常见安装路径（drawio 引擎的本地渲染器，可选）
+_WIN_DRAWIO_CANDIDATES = (
+    r"{PF}\draw.io\draw.io.exe",
+    r"{PF86}\draw.io\draw.io.exe",
+    r"{LOCAL}\Programs\draw.io\draw.io.exe",
+)
+_MAC_DRAWIO = Path("/Applications/draw.io.app/Contents/MacOS/draw.io")
 
 # Windows 常见 Chrome / Edge 安装路径（与主程序 runtime.py 的嗅探规则保持一致）
 _WIN_BROWSER_CANDIDATES = (
@@ -70,6 +79,24 @@ def _sniff_browser() -> str | None:
         if found:
             return found
     return None
+
+
+def _sniff_drawio() -> str | None:
+    """嗅探 draw.io 桌面版安装路径（drawio 出图引擎的本地渲染器，可选）。"""
+    if sys.platform == "win32":
+        mapping = {
+            "PF": os.getenv("ProgramFiles", r"C:\Program Files"),
+            "PF86": os.getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            "LOCAL": os.getenv("LOCALAPPDATA", ""),
+        }
+        for tpl in _WIN_DRAWIO_CANDIDATES:
+            p = Path(tpl.format(**mapping))
+            if p.is_file():
+                return str(p)
+    elif sys.platform == "darwin" and _MAC_DRAWIO.is_file():
+        return str(_MAC_DRAWIO)
+    found = shutil.which("drawio")
+    return found or None
 
 
 def _exe_dir() -> Path:
@@ -170,11 +197,28 @@ def _run_wizard(env_path: Path) -> None:
             print("已取消，未写入任何配置。")
             sys.exit(1)
 
+    # draw.io 桌面版自动嗅探（可选：drawio 引擎用它本地渲染可编辑的 .drawio）
+    drawio = _sniff_drawio()
+    if drawio:
+        print(f"\n已自动找到 draw.io：{drawio}")
+        drawio_block = (
+            "# draw.io 桌面版（自动嗅探；在 .env 加 OUTPUT_ENGINE=drawio 即可\n"
+            "# 启用 drawio 出图引擎，产出可二次编辑的 .drawio 文件）\n"
+            f"DRAWIO_PATH={drawio}\n"
+        )
+    else:
+        drawio_block = (
+            "# 可选：drawio 出图引擎（产出可二次编辑的 .drawio 文件，\n"
+            "# 需安装 draw.io 桌面版：https://www.drawio.com/ ）\n"
+            "# OUTPUT_ENGINE=drawio\n"
+            "# DRAWIO_PATH=C:\\Program Files\\draw.io\\draw.io.exe\n"
+        )
+
     env_path.write_text(
         _ENV_TEMPLATE.format(
             model=model, api_key=api_key, base_url=base_url,
             v_model=v_model, v_api_key=v_api_key, v_base_url=v_base_url,
-            chrome=chrome,
+            chrome=chrome, drawio_block=drawio_block,
         ),
         encoding="utf-8",
     )

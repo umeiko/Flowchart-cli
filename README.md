@@ -1,6 +1,6 @@
 # Flowchart AI Agent
 
-**用自然语言生成 Mermaid 流程图的循环式 Agent**：生成 → 语法预检 → mermaid-cli 渲染 → 多模态视觉验证 → 反馈修复，直到图真正画对为止。
+**用自然语言生成流程图/架构图的循环式 Agent**：生成 → 语法预检 → 渲染 → 多模态视觉验证 → 反馈修复，直到图真正画对为止。双出图引擎：**Mermaid**（mmdc 渲染）与 **drawio**（LLM 直出 draw.io 原生 XML，确定性布局，桌面版本地渲染，产物可二次编辑）。
 
 ![main](docs/images/main.png)
 
@@ -25,11 +25,13 @@
 
 ```mermaid
 flowchart TD
-    A([开始]) --> B[输入手机]
-    B --> C[输入密码]
-    C --> D[登录]
-    D --> E[登录成功]
-    E --> F([完成])
+    classDef terminal fill:#E1E4E6,color:#3E4144,stroke-width:0
+    classDef required fill:#2ECBFF,color:#FFFFFF,stroke-width:0
+    start([开始]):::terminal --> input_phone(输入手机):::required
+    input_phone --> input_password(输入密码):::required
+    input_password --> login(登录):::required
+    login --> success(登录成功):::required
+    success --> done([完成]):::terminal
 ```
 </details>
 
@@ -38,8 +40,9 @@ flowchart TD
 - **对话修改**：`把登录改成验证码登录` —— 在现有图上修订，重走验证循环
 - **贴图生成**：拖入手绘草图/现有流程图截图（`TEXT_MODEL_VISION=true`），模型看图作画；主模型无视觉能力时也不怕——`ocr_image` 工具用验证模型把素材图片里的文字和连接关系逐字提取出来再作画
 - **工作文档**：素材多/需求杂时，Agent 会把各素材要点和初步生成方案整合成 `working_doc.md`（可用工具随时读写修改），再基于它生成，不把所有素材原文堆在对话里
-- **流式输出**：模型回复与 Mermaid 生成过程边产出边滚动显示
-- **风格模板**：`styles/` 目录下每个 `.md` 文件就是一个风格插件，主 Agent 自己发现并按需选用；往目录丢一个 markdown 即可新增风格；`default.md` 始终生效，编辑它即可定制全局默认风格
+- **流式输出**：模型回复与图表源码生成过程边产出边滚动显示
+- **drawio 出图引擎**：`.env` 设 `OUTPUT_ENGINE=drawio` 并配置 `DRAWIO_PATH`（draw.io 桌面版路径），或会话中输入 `/engine drawio` / 直接说"切换到 drawio 模式"——LLM 直出 draw.io 原生 XML，坐标与走线由确定性布局器计算（流程图自动分支并排、直角正交走线；架构图组件严格等大、网格对齐），产物 `.drawio` 可导入 draw.io/Visio/亿图二次编辑。流程图/架构图按文档自动路由到两套提示词与布局管线
+- **风格模板**：`styles/` 目录下每个 `.md` 文件就是一个风格插件，主 Agent 自己发现并按需选用；往目录丢一个 markdown 即可新增风格；`default.md` 始终生效，编辑它即可定制全局默认风格。模板中 `## [drawio:flowchart]` / `## [drawio:architecture]` 标记的段落是 drawio 引擎的专属规则，双引擎共用同一份色彩规范
 - **风格生成 Agent**：现有模板都不满意时直接说"帮我做一个手绘风格的模板"，`create_style` 工具会自动起草风格插件、校验格式、试渲染，通过后写入 `styles/` 并立即启用
 - **风格转换 Agent**：`换成深色风格`、`按这个文档调整风格` —— 只改样式层不改内容，骨架校验机械保证节点/连线/文字零改动；风格来源可以是现有模板（`style_name`）或口述/文档输入的风格要求（`style_document`）
 - **技能包（Skill Packs）**：`skills/` 目录下每个带 frontmatter 的 `.md` 就是一个提示词型技能，主 Agent 遇到陌生领域任务时自己发现并遵照执行；从社区看到好用的 SKILL，丢进目录即可用。
@@ -82,6 +85,10 @@ cp .env.example .env
 Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`（或 Edge），工具会
 自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §5.3。
 
+出图引擎通过 `OUTPUT_ENGINE` 选择：`mermaid`（默认）或 `drawio`（需另装 draw.io
+桌面版并在 `DRAWIO_PATH` 配置其路径；drawio 引擎产出可二次编辑的 `.drawio` 文件）。
+会话中也可用 `/engine` 命令或对 Agent 说"切换引擎"随时切换。
+
 ## 使用
 
 ```bash
@@ -119,35 +126,41 @@ flowchart_agent/
 ├── llm/client.py        # OpenAI 兼容客户端
 ├── mermaid/extract.py   # 从 LLM 输出提取 Mermaid 代码
 ├── mermaid/render.py    # mmdc 渲染 + 快速预检
+├── drawio/              # drawio 出图引擎（LLM 直出 draw.io XML → 确定性布局 → 桌面版渲染）
+│   ├── xml.py           #   XML 提取与清洗
+│   ├── layout.py        #   架构图布局器（层容器/子容器/组件网格）
+│   ├── layout_flow.py   #   流程图布局器（分层 + 分支并排 + 直角走线规范化）
+│   └── render.py        #   draw.io 桌面版 CLI 渲染
 ├── prompts/             # Prompt 模板包（按子 Agent 分文件）
-│   ├── generate.py      #   生成/修复
-│   ├── verify.py        #   三档检视
+│   ├── generate.py      #   生成/修复（mermaid 引擎）
+│   ├── drawio.py        #   drawio 引擎生成/修复（架构图/流程图两套模板）
+│   ├── verify.py        #   三档检视（双引擎共用）
 │   ├── style.py         #   风格生成
 │   ├── restyle.py       #   风格转换
 │   ├── ocr.py           #   OCR 工具
-│   ├── route.py         #   一级路由（生成/检查/闲聊）
+│   ├── route.py         #   一级路由（生成/检查/闲聊）+ 图型二级路由（流程图/架构图）
 │   └── check/           #   检查管线（图像描述/二级分类/四类检查清单）
-├── router.py            # 一级分类器
+├── router.py            # 分类器（一级意图 + drawio 图型二级路由）
 ├── check/               # 检查管线（文档/图片检视）
 │   ├── items.py         #   检查项注册表（渐进式披露的技能清单）
 │   ├── classifier.py    #   二级分类器
 │   ├── item_agent.py    #   ItemCheckAgent：单项检查子 Agent
 │   └── agent.py         #   CheckAgent：编排素材、逐项派发、产出 CSV 报告
-├── agent.py             # 生成-渲染-验证子循环
+├── agent.py             # 生成-渲染-验证子循环（双引擎）
 ├── style_agent.py       # 风格生成子 Agent
 ├── restyle_agent.py     # 风格转换子 Agent
-├── session.py           # 会话状态
+├── session.py           # 会话状态（含出图引擎切换）
 ├── skills/              # 最小 Skill 抽象
 │   ├── base.py          #   Skill 定义
-│   └── builtin.py       #   19+1 个内置工具
+│   └── builtin.py       #   20+1 个内置工具
 ├── skillpacks.py        # 技能包加载器（扫描 skills/*.md）
 ├── main_agent.py        # 主 Agent（含一级路由）
-├── styles.py            # 风格插件加载器（扫描 styles/*.md）
+├── styles.py            # 风格插件加载器（扫描 styles/*.md，含引擎专属规则段）
 ├── runtime.py           # 冻结感知 + node/mmdc/浏览器解析（离线包 vendor）
 ├── tui_chips.py         # TUI 处理
 ├── chat_cli.py          # 交互式 REPL
 └── cli.py               # 命令行入口
-packaging/               # 离线包构建（PyInstaller spec + make_bundle.py）
+packaging/               # 离线包构建（PyInstaller spec + make_bundle.py + 首配向导 onboard.py）
 styles/                  # 作图风格插件（.md 文件，可自行新增）
 scripts/
 └── mermaid_parse.mjs    # Node 侧语法预检

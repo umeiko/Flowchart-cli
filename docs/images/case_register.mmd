@@ -1,9 +1,13 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#F5F8FF', 'primaryTextColor': '#3E4144', 'primaryBorderColor': 'transparent', 'lineColor': '#666666', 'secondaryColor': '#D2E6FA', 'tertiaryColor': '#F5F8FF', 'clusterBkg': '#D2E6FA', 'clusterBorder': '#666666', 'edgeLabelBackground': '#F8F8F8'}}}%%
 flowchart TD
-    Start(["开始"]) --> FillInfo["填写注册信息"]
-    FillInfo --> Validate{"校验信息"}
-    Validate -->|"不通过"| Retry["重新填写"]
-    Retry --> FillInfo
-    Validate -->|"通过"| SendSMS["发送短信验证码"]
-    SendSMS --> InputSMS["用户输入短信验证码"]
-    InputSMS --> Success["注册成功"]
-    Success --> Finish(["结束"])
+    classDef terminal fill:#E1E4E6,color:#3E4144,stroke-width:0
+    classDef required fill:#2ECBFF,color:#FFFFFF,stroke-width:0
+    classDef optional fill:#D2E6FA,color:#3E4144,stroke-width:0
+    start([开始]):::terminal --> fill_info[填写注册信息]:::required
+    fill_info --> check_info{校验信息}:::required
+    check_info -->|不通过| refill[重新填写]:::optional
+    refill --> fill_info
+    check_info -->|通过| send_code[发送短信验证码]:::required
+    send_code --> input_code[用户输入短信验证码]:::required
+    input_code --> success[注册成功]:::required
+    success --> finish([结束]):::terminal

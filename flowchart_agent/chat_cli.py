@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 _HISTORY_FILE = Path.home() / ".flowchart_agent_history"
-_COMMANDS = ["/code", "/path", "/yolo", "/help", "/exit", "/quit"]
+_COMMANDS = ["/code", "/engine", "/path", "/yolo", "/help", "/exit", "/quit"]
 
 _CMD_TIMEOUT = 120  # run_command 单次执行超时（秒）
 _CMD_OUTPUT_LIMIT = 4000  # 返回给模型的输出截断长度
@@ -65,7 +65,8 @@ _TOOLBAR = HTML(
 _HELP = """\
 **命令**
 
-- `/code` — 打印当前流程图的 Mermaid 代码
+- `/code` — 打印当前图的源码（mermaid 引擎为 Mermaid 代码，drawio 引擎为 draw.io XML）
+- `/engine` — 查看或切换出图引擎：`/engine mermaid` / `/engine drawio`（drawio 需配置 DRAWIO_PATH，产物为可二次编辑的 .drawio）
 - `/path` — 打印当前产物目录
 - `/help` — 显示本帮助
 - `/exit` — 退出（或按 Ctrl+D）
@@ -75,6 +76,8 @@ _HELP = """\
 - 直接描述需求，如：画一个登录流程，包含验证码校验失败重试
 - 或给出文档路径，如：根据 test_datas/gen/1.txt 生成流程图
 - 已有图之后，继续说修改意见即可，如：把登录改成验证码登录
+- **切换出图引擎**：说"切换到 drawio 模式"，或直接输入 `/engine drawio`；
+  drawio 模式自动按文档路由流程图/架构图两套管线，配色遵循 `styles/` 模板
 - **检查文档/图片**，如：检查 test_datas/check/flowchart/2.txt 里的流程图和操作步骤是否一致（图在 2.jpg）——
   支持原理图/流程图/组网图/界面截图四类检查（产物在 `output/check/`）
 - **拖入图片文件**（草图/现有流程图截图）：自动变成彩色 `[图片:文件名]` 芯片，
@@ -118,7 +121,8 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
     # 产物分目录：生成侧 output/generate/，检查侧 output/check/（由 CheckAgent 管理）
     session = DiagramSession(settings, output_dir / "generate")
     display = _StreamDisplay(console)
-    session.on_delta = display.show_generation  # 生成循环的 Mermaid 原文流
+    display.engine = session.engine
+    session.on_delta = display.show_generation  # 生成循环的源码流式显示
     session.on_round_start = display.reset_segment  # 每轮清空上一段，避免堆砌
     runner = _CommandRunner(console, display, yolo=yolo, cwd=output_dir)  # run_command 后端
     agent = MainAgent(
@@ -129,7 +133,7 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         on_progress=display.set_status,  # 检查管线的路由/进度提示
         command_runner=runner,
     )
-    _print_banner(output_dir, settings, yolo=yolo)
+    _print_banner(output_dir, settings, yolo=yolo, session_engine=session.engine)
     chips = ChipRegistry()
     prompt_session = _make_prompt_session(chips)
 
@@ -155,7 +159,19 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
             continue
         if user_input == "/code":
             code = session.current_code
-            console.print(Markdown(f"```mermaid\n{code}\n```" if code else "（还没有流程图）"))
+            fence = "xml" if session.engine == "drawio" else "mermaid"
+            console.print(Markdown(f"```{fence}\n{code}\n```" if code else "（还没有图）"))
+            continue
+        if user_input == "/engine" or user_input.startswith("/engine "):
+            arg = user_input[7:].strip()
+            if not arg:
+                console.print(
+                    f"当前出图引擎：[cyan]{session.engine}[/cyan]（可选：mermaid、drawio；"
+                    "切换：/engine drawio）"
+                )
+            else:
+                console.print(session.set_output_engine(arg))
+                display.engine = session.engine  # 同步流式显示的源码标签
             continue
         if user_input == "/path":
             console.print(f"产物目录：[cyan]{session.output_dir.resolve()}[/cyan]")
@@ -219,6 +235,7 @@ class _StreamDisplay:
         self._live: Live | None = None
         self._buf: list[str] = []
         self._title = ""
+        self.engine = "mermaid"  # 出图引擎（/engine 切换时同步更新流式标题）
 
     def __enter__(self) -> "_StreamDisplay":
         self._buf, self._title = [], ""
@@ -257,7 +274,8 @@ class _StreamDisplay:
         self._feed("[bold green]助手[/bold green]", "green", delta)
 
     def show_generation(self, delta: str) -> None:
-        self._feed("[bold cyan]生成 Mermaid 中…[/bold cyan]", "cyan", delta)
+        label = "drawio XML" if self.engine == "drawio" else "Mermaid"
+        self._feed(f"[bold cyan]生成 {label} 中…[/bold cyan]", "cyan", delta)
 
     def reset_segment(self, _round_no: int = 0) -> None:
         """新一轮生成开始：清空上一段（上一轮的 Mermaid 原文），
@@ -358,7 +376,10 @@ class _CommandRunner:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                # 命令输出编码不可控（Windows 工具多为 GBK，node 类工具为 UTF-8），
+                # 用系统区域编码解码但容忍坏字节，避免 reader 线程崩溃丢输出
                 text=True,
+                errors="replace",
                 cwd=str(self._cwd),
                 start_new_session=(sys.platform != "win32"),
             )
@@ -404,7 +425,9 @@ class _CommandRunner:
             pass
 
 
-def _print_banner(output_dir: Path, settings: Settings, yolo: bool = False) -> None:
+def _print_banner(
+    output_dir: Path, settings: Settings, yolo: bool = False, session_engine: str = ""
+) -> None:
     vision = (
         "[green]已开启[/green]" if settings.text_model_vision else "[dim]未开启[/dim]"
     )
@@ -416,9 +439,9 @@ def _print_banner(output_dir: Path, settings: Settings, yolo: bool = False) -> N
     console.print(
         Panel(
             f"[bold cyan]Flowchart AI Agent[/bold cyan]  [dim]v{__version__}[/dim]\n\n"
-            "自然语言 → Mermaid 流程图  [dim]（生成 · 渲染校验 · 视觉验证循环）[/dim]\n"
-            f"[dim]产物目录 {output_dir} · 主模型图像输入 {vision} · "
-            "/help 查看命令 · Ctrl+D 退出[/dim]"
+            "自然语言 → 流程图/架构图  [dim]（生成 · 渲染校验 · 视觉验证循环）[/dim]\n"
+            f"[dim]出图引擎 {session_engine}（/engine 切换） · 产物目录 {output_dir} · "
+            f"主模型图像输入 {vision} · /help 查看命令 · Ctrl+D 退出[/dim]"
             f"{yolo_line}",
             border_style="cyan",
             padding=(1, 2),

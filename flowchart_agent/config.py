@@ -33,6 +33,13 @@ class Settings:
     # mmdc 渲染使用的 Chrome 可执行文件路径（puppeteer executablePath）。
     # 公司 Windows 等环境 puppeteer 自带 Chromium 不可用时，指向本机 chrome.exe。
     chrome_path: str | None = None
+    # draw.io 桌面版可执行文件路径（drawio 子 Agent 的本地渲染器，
+    # 用 draw.io -x -f png 把 .drawio 导出为 PNG 供检视闭环使用）
+    drawio_path: str | None = None
+    # 出图引擎：mermaid（默认，Mermaid 代码 → mmdc 渲染）或
+    # drawio（LLM 直接生成 draw.io 原生 XML，draw.io 桌面版渲染，
+    # 产物可直接拖进 draw.io/Visio/亿图编辑）
+    output_engine: str = "mermaid"
     # 视觉检视强度：full=完整检视（排版+内容语义），layout=仅基础图形检视
     # （排版/遮挡/连线，不逐字核对内容；视觉模型识字能力弱时用，防止误判死循环），
     # code=代码检视（完全不依赖视觉模型，文本模型直接审查 Mermaid 源码，最兜底）
@@ -85,6 +92,8 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
         output_format=os.getenv("OUTPUT_FORMAT", "png"),
         render_background=os.getenv("RENDER_BACKGROUND", "white"),
         chrome_path=os.getenv("CHROME_PATH") or None,
+        drawio_path=os.getenv("DRAWIO_PATH") or None,
+        output_engine=(os.getenv("OUTPUT_ENGINE") or "mermaid").strip().lower(),
         verify_mode=(os.getenv("VERIFY_MODE") or "full").lower(),
         render_scale=os.getenv("RENDER_SCALE") or "2",
         render_width=os.getenv("RENDER_WIDTH") or "auto",

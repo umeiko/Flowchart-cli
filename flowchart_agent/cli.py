@@ -15,6 +15,7 @@ from pathlib import Path
 from .agent import FlowchartAgent
 from .chat_cli import run_chat
 from .config import load_settings
+from .drawio import check_drawio_available, render_drawio
 from .mermaid import render_mermaid
 from .styles import get_style, load_styles
 
@@ -93,6 +94,12 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
     if not document.is_file():
         print(f"错误：文档不存在：{document}", file=sys.stderr)
         return 2
+    engine = settings.output_engine
+    if engine == "drawio":
+        unavailable = check_drawio_available(settings.drawio_path)
+        if unavailable:
+            print(f"错误：{unavailable}", file=sys.stderr)
+            return 2
     style = None
     if style_name:
         try:
@@ -108,24 +115,33 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
     try:
         result = FlowchartAgent(settings).run(
             doc_text, output, style=style, verify_mode=settings.verify_mode,
-            action=f"run 模式（文档 {document}）",
+            action=f"run 模式（文档 {document}）", engine=engine,
         )
     except Exception as e:
         print(f"运行失败：{e}", file=sys.stderr)
         return 1
 
+    src_name = "final.drawio" if engine == "drawio" else "final.mmd"
     if result.success:
-        final_mmd = output / "final.mmd"
-        final_mmd.write_text(result.mermaid_code, encoding="utf-8")
+        final_src = output / src_name
+        final_src.write_text(result.mermaid_code, encoding="utf-8")
         if result.image_path:
             shutil.copy(result.image_path, output / f"final{result.image_path.suffix}")
+        if engine == "drawio":
+            svg_path = render_drawio(
+                final_src, output / "final.svg", settings.drawio_path, fmt="svg"
+            )
+            print(f"成功（{len(result.rounds)} 轮）：{final_src}")
+            if svg_path:
+                print(f"SVG：{svg_path}")
+            return 0
         # 与 agent 内相同的背景解析：风格插件 > RENDER_BACKGROUND
         bg = (style.background if style else None) or settings.render_background
         svg = render_mermaid(
             result.mermaid_code, output, stem="final", fmt="svg", background=bg,
             chrome_path=settings.chrome_path,
         )
-        print(f"成功（{len(result.rounds)} 轮）：{final_mmd}")
+        print(f"成功（{len(result.rounds)} 轮）：{final_src}")
         if svg.ok:
             print(f"SVG：{svg.image_path}")
         return 0
@@ -133,8 +149,22 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
     print(f"失败：{len(result.rounds)} 轮后仍未通过验证。", file=sys.stderr)
     if result.final_feedback:
         print(f"最后的验证意见：\n{result.final_feedback}", file=sys.stderr)
-    if result.image_path:
-        print(f"最后一轮产物见：{result.image_path}", file=sys.stderr)
+    if result.mermaid_code:
+        # 兜底发布，不让用户空手而归：有可渲染版本就发真图，
+        # 全部渲不出来时发失败说明卡片（agent.run 已按此二选一）
+        final_src = output / src_name
+        final_src.write_text(result.mermaid_code, encoding="utf-8")
+        rendered = any(r.image_path is not None for r in result.rounds)
+        note = (
+            "已保留最后一版可渲染的图（未通过验证，仅供参考）"
+            if rendered
+            else "已生成失败说明卡片（失败代码与原因见图）"
+        )
+        print(f"{note}：{final_src}")
+        if result.image_path:
+            final_img = output / f"final{result.image_path.suffix}"
+            shutil.copy(result.image_path, final_img)
+            print(f"最后一版渲染图：{final_img}")
     return 1
 
 

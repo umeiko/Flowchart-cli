@@ -348,8 +348,30 @@ def build_skills(
             handler=session.set_style,
         ),
         Skill(
-            name="set_verification",
+            name="set_output_engine",
             description=(
+                "切换出图引擎（作用于后续生成与修改）。"
+                "mermaid=默认：产出 Mermaid 代码（.mmd），mmdc 渲染；"
+                "drawio=直接产出 draw.io 原生可编辑文件（.drawio，组件等大、"
+                "网格对齐，可导入 draw.io/Visio/亿图二次编辑），由本机 draw.io "
+                "桌面版渲染，需要 .env 配置 DRAWIO_PATH。"
+                "用户要求可编辑产物、方方正正的架构图、或明确要求 drawio 模式时调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "engine": {
+                        "type": "string",
+                        "enum": ["mermaid", "drawio"],
+                        "description": "出图引擎：mermaid 或 drawio",
+                    },
+                },
+                "required": ["engine"],
+            },
+            handler=session.set_output_engine,
+        ),
+        Skill(
+            name="set_verification",            description=(
                 "调整检视强度（作用于后续生成与修改）。"
                 "full=完整检视：排版结构 + 内容与逻辑核对；"
                 "layout=仅基础图形检视：只查文字排版错误、连线混乱、方框遮挡，"
@@ -463,10 +485,12 @@ def build_skills(
         ),
         Skill(
             name="get_current_diagram",
-            description="查看当前流程图的 Mermaid 代码与产物路径。",
+            description="查看当前流程图的源码（Mermaid 或 drawio XML）与产物路径。",
             parameters={"type": "object", "properties": {}},
             handler=lambda: (
-                f"当前 Mermaid 代码：\n```mermaid\n{session.current_code}\n```\n"
+                f"当前{'drawio XML' if session.engine == 'drawio' else 'Mermaid 代码'}：\n"
+                f"```{session.engine if session.engine == 'drawio' else 'mermaid'}\n"
+                f"{session.current_code}\n```\n"
                 f"图片：{session.current_image}"
                 if session.has_diagram
                 else "当前还没有流程图。"

@@ -5,6 +5,7 @@ __pycache__/
 venv/
 node_modules/
 output*/
+.puppeteer-config.json
 .DS_Store
 frdetr*/
 # 打包产物（PyInstaller 与 make_bundle.py 的输出）

@@ -1,27 +1,34 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#F5F8FF', 'primaryTextColor': '#3E4144', 'primaryBorderColor': 'transparent', 'lineColor': '#666666', 'secondaryColor': '#D2E6FA', 'tertiaryColor': '#F5F8FF', 'clusterBkg': '#D2E6FA', 'clusterBorder': '#666666', 'edgeLabelBackground': '#F8F8F8'}}}%%
 flowchart TD
-    subgraph sub_interaction ["交互层"]
-        n1(["用户"]) --> n2["chat REPL"]
-        n9(["输出产物"]) --> n1
-    end
+    classDef arc1 fill:#F5F8FF,color:#3E4144,stroke-width:0
+    classDef arc2 fill:#D0F0F5,color:#3E4144,stroke-width:0
+    classDef arc3 fill:#D2E6FA,color:#3E4144,stroke-width:0
+    classDef arc4 fill:#E1E4E6,color:#3E4144,stroke-width:0
+    classDef arcCore fill:#2ECBFF,color:#FFFFFF,stroke-width:0
 
-    subgraph sub_agent ["主 Agent 层"]
-        n2 --> n3["主 Agent"]
-        n3 --> n4["Skill 调度"]
+    subgraph sub_interaction["交互层"]
+        direction LR
+        n1(["用户"]):::arc4 --> n2["chat REPL"]:::arc1
+        n9(["输出产物"]):::arc4 --> n1
     end
+    style sub_interaction fill:#B4DCE6,color:#3E4144,stroke:#000000
 
-    subgraph sub_loop ["生成验证循环"]
-        n4 --> n5["生成 Mermaid 代码"]
-        n5 --> n6{"语法预检"}
+    subgraph sub_agent["主 Agent 层"]
+        direction LR
+        n3["主 Agent"]:::arc2 --> n4["Skill 调度"]:::arc2
+    end
+    style sub_agent fill:#5AC3A0,color:#FFFFFF,stroke:#000000
+
+    subgraph sub_loop["生成验证循环"]
+        direction LR
+        n5["生成 Mermaid 代码"]:::arc3 --> n6{"语法预检"}:::arcCore
         n6 -->|"不合法"| n5
-        n6 -->|"合法"| n7["渲染成图"]
-        n7 --> n8{"视觉验证"}
+        n6 -->|"合法"| n7["渲染成图"]:::arc3
+        n7 --> n8{"视觉验证"}:::arcCore
         n8 -->|"不通过"| n5
         n8 -->|"通过"| n9
     end
+    style sub_loop fill:#B4DCE6,color:#3E4144,stroke:#000000
 
-    classDef interaction fill:#e3f2fd,stroke:#90caf9,stroke-width:2px,color:#0d47a1
-    classDef agent fill:#e8f5e9,stroke:#a5d6a7,stroke-width:2px,color:#1b5e20
-    classDef loop fill:#fff3e0,stroke:#ffcc80,stroke-width:2px,color:#e65100
-    class sub_interaction interaction
-    class sub_agent agent
-    class sub_loop loop
+    n2 --> n3
+    n4 --> n5

@@ -9,6 +9,7 @@ from typing import Callable
 
 from .agent import FlowchartAgent
 from .config import Settings
+from .drawio import check_drawio_available, render_drawio
 from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
@@ -45,6 +46,34 @@ class DiagramSession:
         self.on_round_start: Callable[[int], None] | None = None
         # 视觉检视强度：full=完整（排版+内容语义），layout=仅基础图形检视
         self.verify_mode = settings.verify_mode
+        # 出图引擎：mermaid（默认）或 drawio（LLM 直出 draw.io XML，
+        # 桌面版渲染，产物可编辑）。默认值来自 .env 的 OUTPUT_ENGINE，
+        # 会话中可用 set_output_engine 工具切换。
+        self.engine = settings.output_engine
+        if self.engine == "drawio":
+            unavailable = check_drawio_available(settings.drawio_path)
+            if unavailable:
+                logger.warning("drawio 引擎不可用：%s", unavailable)
+
+    def set_output_engine(self, engine: str) -> str:
+        """切换出图引擎（set_output_engine 工具的 handler）。"""
+        engine = engine.strip().lower()
+        if engine not in ("mermaid", "drawio"):
+            return f"错误：未知出图引擎 {engine!r}，可选：mermaid、drawio。"
+        if engine == "drawio":
+            unavailable = check_drawio_available(self._settings.drawio_path)
+            if unavailable:
+                return f"暂时无法切换到 drawio 模式：{unavailable}"
+        self.engine = engine
+        if engine == "drawio":
+            return (
+                "已切换为 drawio 模式：后续生成将直接产出 draw.io 原生文件"
+                "（组件等大、网格对齐，可导入 draw.io/Visio/亿图二次编辑），"
+                "由本机 draw.io 桌面版渲染。流程图/架构图会自动路由到对应的"
+                "提示词与布局管线；配色遵循风格模板（styles/）中的 drawio "
+                "规则段，模板未提供时使用内置默认配色。"
+            )
+        return "已切换为 mermaid 模式：后续生成将产出 Mermaid 代码并用 mmdc 渲染。"
 
     def set_verify_mode(self, mode: str) -> str:
         """切换检视强度（set_verification 工具的 handler）。"""
@@ -238,12 +267,27 @@ class DiagramSession:
             verify_mode=self.verify_mode,
             on_round_start=self.on_round_start,
             action=action,
+            engine=self.engine,
         )
         if not result.success:
             feedback = result.final_feedback or "未知原因"
-            return (
-                f"生成失败：{len(result.rounds)} 轮后仍未通过验证。\n"
-                f"最后的验证意见：{feedback}\n过程日志见 {run_dir}/run.log"
+            if not result.mermaid_code:
+                return (
+                    f"生成失败：{len(result.rounds)} 轮后仍未产出可用的图表代码。\n"
+                    f"最后的验证意见：{feedback}\n过程日志见 {run_dir}/run.log"
+                )
+            # 兜底发布，current.* 不留空：有可渲染版本就发真图，
+            # 全部渲不出来时发失败说明卡片（agent.run 已按此二选一）
+            rendered = any(r.image_path is not None for r in result.rounds)
+            note = (
+                "已保留最后一版可渲染的图供参考（未通过检视）。"
+                if rendered
+                else "所有轮次均未能渲染出图，已生成失败说明卡片（失败代码与原因见图）。"
+            )
+            return self._publish(
+                result.mermaid_code, result.image_path, run_dir,
+                f"达到最大轮次（{len(result.rounds)} 轮）未通过验证，{note}\n"
+                f"最后的验证意见：{feedback}",
             )
         return self._publish(
             result.mermaid_code, result.image_path, run_dir,
@@ -255,7 +299,13 @@ class DiagramSession:
 
         只调整样式层，内容与结构由骨架校验保证零改动。风格来源二选一：
         现有风格模板（style_name）或自由风格文本（style_document）。
+        仅 mermaid 引擎支持（drawio 引擎配色内置在生成提示词中）。
         """
+        if self.engine == "drawio":
+            return (
+                "drawio 模式下不支持风格转换（风格模板是 Mermaid 概念）；"
+                "可用 set_output_engine 切回 mermaid，或直接描述配色要求重新生成。"
+            )
         if not self.has_diagram:
             return "还没有生成过流程图，请先描述需求创建一张图。"
         style_obj = None
@@ -291,28 +341,44 @@ class DiagramSession:
         )
 
     def _publish(self, code: str, image_path: Path | None, run_dir: Path, note: str) -> str:
-        """把最新结果同步为会话当前状态，并落到 current.mmd / current.png / current.svg。"""
+        """把最新结果同步为会话当前状态，并落到 current.mmd / current.drawio /
+        current.png / current.svg（按当前出图引擎选择源码格式）。"""
         self.current_code = code
         self.current_image = image_path
-        final_mmd = self._output_dir / "current.mmd"
-        final_mmd.write_text(code, encoding="utf-8")
-        current_img = None
-        if image_path:
-            current_img = self._output_dir / f"current{image_path.suffix}"
-            shutil.copy(image_path, current_img)
-        svg = render_mermaid(
-            code, self._output_dir,
-            stem="current", fmt="svg", background=self.background,
-            chrome_path=self._settings.chrome_path,
-        )
-        svg_note = f"\nSVG：{svg.image_path}" if svg.ok else ""
+        if self.engine == "drawio":
+            src_label = "drawio 文件"
+            final_src = self._output_dir / "current.drawio"
+            final_src.write_text(code, encoding="utf-8")
+            current_img = None
+            if image_path:
+                current_img = self._output_dir / f"current{image_path.suffix}"
+                shutil.copy(image_path, current_img)
+            svg_path = render_drawio(
+                final_src, self._output_dir / "current.svg",
+                self._settings.drawio_path, fmt="svg",
+            )
+            svg_note = f"\nSVG：{svg_path}" if svg_path else ""
+        else:
+            src_label = "Mermaid 代码"
+            final_src = self._output_dir / "current.mmd"
+            final_src.write_text(code, encoding="utf-8")
+            current_img = None
+            if image_path:
+                current_img = self._output_dir / f"current{image_path.suffix}"
+                shutil.copy(image_path, current_img)
+            svg = render_mermaid(
+                code, self._output_dir,
+                stem="current", fmt="svg", background=self.background,
+                chrome_path=self._settings.chrome_path,
+            )
+            svg_note = f"\nSVG：{svg.image_path}" if svg.ok else ""
         logger.info(
             "产物发布：%s；%s%s；过程产物 %s",
-            note, final_mmd, f" {current_img}" if current_img else "", run_dir,
+            note, final_src, f" {current_img}" if current_img else "", run_dir,
         )
         return (
             f"{note}\n"
-            f"Mermaid 代码：{final_mmd}\n"
+            f"{src_label}：{final_src}\n"
             f"渲染图片：{current_img}{svg_note}\n"
             f"过程产物：{run_dir}"
         )

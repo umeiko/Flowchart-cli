@@ -122,7 +122,10 @@ def _run_mmdc(
     proc = subprocess.run(
         cmd,
         capture_output=True,
-        text=True,
+        # node/mmdc 的输出是 UTF-8；Windows 中文环境的默认 GBK 解码遇到
+        # UTF-8 字节会炸 reader 线程，stderr 变 None（曾导致 AttributeError）
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     if proc.returncode != 0 or not image_path.exists():
@@ -200,11 +203,14 @@ def _quick_parse_check(mmd_path: Path) -> str | None:
         proc = subprocess.run(
             [node, str(script), str(mmd_path)],
             capture_output=True,
-            text=True,
+            # node 输出为 UTF-8；显式指定编码避免 Windows GBK 区域设置下
+            # 解码失败导致 stderr 为 None（reader 线程崩溃）
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None  # 预检自身故障不应阻塞主流程
     if proc.returncode == 1:
-        return proc.stderr.strip() or "Mermaid 语法错误"
+        return (proc.stderr or "").strip() or "Mermaid 语法错误"
     return None  # 0=通过；2=预检故障，交给 mmdc

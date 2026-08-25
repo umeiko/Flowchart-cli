@@ -17,3 +17,20 @@ ROUTE_USER = """用户输入：
 {user_input}
 </input>
 {images_note}"""
+
+# 二级路由（drawio 引擎内）：判断文档要画流程图还是架构图，
+# 决定使用哪套生成提示词与后处理布局器。
+DIAGRAM_TYPE_SYSTEM = """你是图表类型分类器。判断文档要画的是哪一类图：
+
+- flowchart（流程图）：有明确的执行顺序、步骤流转、开始结束，常含判断分支
+  （是/否、条件选择）；
+- architecture（架构图）：系统/产品的分层、分组、组成结构（如接入层/服务层/
+  数据层、模块划分），关注"由什么组成"，不关注执行顺序。
+
+只输出一行 JSON，不要任何其他内容：
+{"diagram_type": "flowchart 或 architecture", "reason": "一句话理由"}"""
+
+DIAGRAM_TYPE_USER = """文档：
+<document>
+{document}
+</document>"""

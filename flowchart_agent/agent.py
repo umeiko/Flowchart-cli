@@ -1,14 +1,30 @@
-"""Agent 主循环：生成 → 渲染校验 → 多模态视觉验证 → 反馈修复。"""
+"""Agent 主循环：生成 → 渲染校验 → 多模态视觉验证 → 反馈修复。
+
+双引擎：mermaid（默认，LLM 出 Mermaid 代码 → mmdc 渲染）与
+drawio（LLM 出 draw.io 原生 XML → 确定性布局 → draw.io 桌面版渲染）。
+"""
 
 from __future__ import annotations
 
 import logging
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 from .config import Settings
+from .drawio import (
+    DrawioNotFoundError,
+    apply_flow_layout,
+    apply_layout,
+    check_drawio_available,
+    extract_xml,
+    render_drawio,
+    sanitize_xml,
+)
 from .llm import LLMClient
 from .mermaid import extract_mermaid, render_mermaid
+from .router import route_diagram_type
 from .styles import Style
 from . import prompts
 
@@ -22,6 +38,81 @@ def _file_size(path: Path) -> str:
     except OSError:
         return "大小未知"
     return f"{kb:.0f} KB" if kb >= 1 else f"{path.stat().st_size} B"
+
+
+# 失败卡片中代码框的最大字符数：完整代码仍在 run 目录的 round_* 产物中
+_FAILURE_CARD_CODE_LIMIT = 3000
+
+
+def _failure_card_drawio(code: str, feedback: str) -> str:
+    """drawio 引擎的失败卡片：合法 mxfile XML，两个宽框分别展示最后一版
+    失败代码与失败的可能原因。确定性拼 XML，不需要模型参与。"""
+
+    def esc(text: str) -> str:
+        return (
+            text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("\r\n", "\n").replace("\n", "&lt;br/&gt;")
+        )
+
+    code = code.strip()
+    if len(code) > _FAILURE_CARD_CODE_LIMIT:
+        code = code[:_FAILURE_CARD_CODE_LIMIT] + "\n……（过长已截断，完整代码见过程目录）"
+    code_text = esc(code) or "（未能提取到代码）"
+    reason_text = esc(feedback.strip()) or "（未知原因，详见 run.log）"
+
+    def box_height(text: str) -> int:
+        lines = text.count("&lt;br/&gt;") + 1
+        return min(40 + lines * 20, 500)
+
+    style_box = (
+        "rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F8FF;strokeColor=#666666;"
+        "fontColor=#3E4144;fontSize=12;align=left;verticalAlign=top;spacing=8;"
+    )
+    h1, h2 = box_height(code_text), box_height(reason_text)
+    y2 = 70 + h1 + 20
+    layer_h = y2 + h2 + 20
+    return f"""<mxfile host="app.diagrams.net">
+  <diagram name="生成失败" id="fail1">
+    <mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="L1" value="生成失败（所有轮次均未通过）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E1E4E6;strokeColor=#000000;fontColor=#3E4144;fontSize=14;fontStyle=1;align=center;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="800" height="{layer_h}" as="geometry"/>
+        </mxCell>
+        <mxCell id="c1" value="&lt;b&gt;失败的代码（最后一版）&lt;/b&gt;&lt;br/&gt;{code_text}" style="{style_box}" vertex="1" parent="L1">
+          <mxGeometry x="30" y="70" width="740" height="{h1}" as="geometry"/>
+        </mxCell>
+        <mxCell id="c2" value="&lt;b&gt;失败的可能原因&lt;/b&gt;&lt;br/&gt;{reason_text}" style="{style_box}" vertex="1" parent="L1">
+          <mxGeometry x="30" y="{y2}" width="740" height="{h2}" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>"""
+
+
+def _failure_card(code: str, feedback: str) -> str:
+    """生成兜底"失败卡片"：合法的 flowchart，两个框分别展示最后一版失败代码
+    与失败的可能原因。用于全部轮次失败时，保证发布的产物一定是可渲染的图。"""
+
+    def esc(text: str) -> str:
+        # Mermaid 节点文字在英文双引号内可含大多数字符；
+        # 只需转义双引号本身（#quot;），换行转 <br/>
+        return text.replace('"', "#quot;").replace("\r\n", "\n").replace("\n", "<br/>")
+
+    code = code.strip()
+    if len(code) > _FAILURE_CARD_CODE_LIMIT:
+        code = code[:_FAILURE_CARD_CODE_LIMIT] + "\n……（过长已截断，完整代码见过程目录 round_*.mmd）"
+    code_text = esc(code) or "（未能提取到 Mermaid 代码）"
+    reason_text = esc(feedback.strip()) or "（未知原因，详见 run.log）"
+    return (
+        "flowchart TD\n"
+        f'    failed_code["<b>失败的代码（最后一版）</b><br/>{code_text}"]\n'
+        f'    failed_reason["<b>失败的可能原因</b><br/>{reason_text}"]\n'
+        "    failed_code --- failed_reason"
+    )
 
 
 @dataclass
@@ -65,6 +156,7 @@ class FlowchartAgent:
         verify_mode: str = "full",
         on_round_start=None,
         action: str = "",
+        engine: str = "mermaid",
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -73,14 +165,34 @@ class FlowchartAgent:
         reference_image：参考图片（用户提供的需求图，或修订时的当前渲染图），
         仅在 TEXT_MODEL_VISION=true 且第一轮生成时随消息发送。
         background：画布背景色，优先于 style 的背景与 RENDER_BACKGROUND 配置。
-        style：风格插件（见 styles.py），注入主题指令并提供默认背景色。
+        style：风格插件（见 styles.py），mermaid 注入主题指令与 prompt_hint，
+        drawio 注入引擎专属规则段（engine_hints，缺失时用提示词内置默认）。
         on_delta：生成阶段的流式文本回调（界面层实时显示），None 为非流式。
         verify_mode：视觉检视强度，full=完整检视（排版+内容语义），
         layout=仅基础图形检视（视觉模型识字能力弱时用，防止误判死循环）。
         on_round_start：每轮开始时回调（界面层清空上一轮的流式显示）。
         action：触发本次运行的动作描述（如 create_diagram/modify_diagram
         及其参数摘要），仅用于 run.log 记录任务上下文。
+        engine：出图引擎，mermaid（默认）或 drawio（需要配置 DRAWIO_PATH）。
         """
+        engine = engine.strip().lower()
+        if engine == "drawio":
+            unavailable = check_drawio_available(self._settings.drawio_path)
+            if unavailable:
+                raise DrawioNotFoundError(unavailable)
+        # drawio 引擎的图型二级路由：决定用哪套提示词与哪个布局器。
+        # 修订模式且上一版就是 drawio XML 时直接从代码判断（有连线即流程图），
+        # 其余情况（新建、或从 mermaid 切引擎后的跨引擎修订）走 LLM 分类。
+        diagram_type = ""
+        if engine == "drawio":
+            if initial_code and "<mxfile" in initial_code:
+                diagram_type = (
+                    "flowchart" if 'edge="1"' in initial_code else "architecture"
+                )
+                logger.info("图型：%s（沿用上版代码的图型）", diagram_type)
+            else:
+                diagram_type = route_diagram_type(self._text_llm, document)
+                logger.info("图型：%s（LLM 二级路由）", diagram_type)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         handler = self._attach_run_log(output_dir / "run.log")
@@ -103,11 +215,12 @@ class FlowchartAgent:
         try:
             logger.info("任务开始：%s", action or "生成流程图")
             logger.info(
-                "配置：模式=%s 检视=%s 风格=%s 背景=%s 最大轮次=%d "
+                "配置：模式=%s 引擎=%s 检视=%s 风格=%s 背景=%s 最大轮次=%d "
                 "输出格式=%s 缩放=%s 宽度=%s 需求文档=%d字符",
                 "修订" if initial_code else "新建",
+                engine,
                 verify_mode,
-                style.name if style else "无",
+                (style.name if style else "无"),
                 bg,
                 self._settings.max_rounds,
                 self._settings.output_format,
@@ -133,33 +246,59 @@ class FlowchartAgent:
                 code, raw = self._generate(
                     document, code, feedback,
                     image=first_round_image if round_no == 1 else None,
-                    on_delta=on_delta,
+                    on_delta=on_delta, style=style, engine=engine,
+                    diagram_type=diagram_type,
                 )
                 raw_path = output_dir / f"round_{round_no}_generate_raw.txt"
                 raw_path.write_text(raw, encoding="utf-8")
                 record = RoundRecord(round_no=round_no, mermaid_code=code, render_ok=False)
                 result.rounds.append(record)
+                label = "drawio XML" if engine == "drawio" else "Mermaid 代码"
                 logger.info(
-                    "第 %d 轮：生成完成（原始输出 %d 字符，提取到 Mermaid 代码 %d 字符，见 %s）",
-                    round_no, len(raw), len(code), raw_path.name,
+                    "第 %d 轮：生成完成（原始输出 %d 字符，提取到 %s %d 字符，见 %s）",
+                    round_no, len(raw), label, len(code), raw_path.name,
                 )
                 if not code:
-                    feedback = "你的输出中没有可识别的 Mermaid 代码，请只输出 ```mermaid 代码块。"
-                    logger.warning("第 %d 轮：未能提取到 Mermaid 代码", round_no)
+                    feedback = (
+                        "你的输出中没有可识别的 drawio mxfile XML，请只输出 ```xml 代码块。"
+                        if engine == "drawio"
+                        else "你的输出中没有可识别的 Mermaid 代码，请只输出 ```mermaid 代码块。"
+                    )
+                    logger.warning("第 %d 轮：未能提取到 %s", round_no, label)
                     continue
 
-                # 应用风格插件（注入主题指令），渲染与产物都用风格化后的代码
-                styled = style.apply(code) if style else code
-                record.mermaid_code = styled
-
                 # 2. 渲染校验
-                render = render_mermaid(
-                    styled, output_dir, stem=f"round_{round_no}",
-                    fmt=self._settings.output_format, background=bg,
-                    chrome_path=self._settings.chrome_path,
-                    scale=self._settings.render_scale,
-                    width=self._settings.render_width,
-                )
+                if engine == "drawio":
+                    # 配色规则由 style 引擎段注入提示词；此处注入确定性几何
+                    # （架构图网格 / 流程图分层分支布局），XML 非法直接打回重修
+                    try:
+                        layout_fn = (
+                            apply_flow_layout
+                            if diagram_type == "flowchart"
+                            else apply_layout
+                        )
+                        styled = layout_fn(sanitize_xml(code))
+                    except (ET.ParseError, ValueError) as e:
+                        feedback = (
+                            f"你的输出不是合法的 drawio {diagram_type} XML（{e}）。"
+                            "请修正后重新输出完整 XML，不要写 mxGeometry 元素。"
+                        )
+                        record.feedback = feedback
+                        logger.warning("第 %d 轮：XML 校验/布局失败 -> %s", round_no, e)
+                        continue
+                    record.mermaid_code = styled
+                    render = self._render_drawio(styled, output_dir, round_no)
+                else:
+                    # 应用风格插件（注入主题指令），渲染与产物都用风格化后的代码
+                    styled = style.apply(code) if style else code
+                    record.mermaid_code = styled
+                    render = render_mermaid(
+                        styled, output_dir, stem=f"round_{round_no}",
+                        fmt=self._settings.output_format, background=bg,
+                        chrome_path=self._settings.chrome_path,
+                        scale=self._settings.render_scale,
+                        width=self._settings.render_width,
+                    )
                 record.render_ok = render.ok
                 record.image_path = render.image_path
                 if not render.ok:
@@ -173,11 +312,16 @@ class FlowchartAgent:
                 )
 
                 # 2.5 顺便出一份 SVG（矢量图便于查看与二次编辑；失败不影响主流程）。
-                # width=auto 的 PNG 渲染已探测出 SVG，直接复用，不重复渲染。
+                # mermaid：width=auto 的 PNG 渲染已探测出 SVG，直接复用；
+                # drawio：SVG 已在 _render_drawio 中一并导出，这里只登记。
                 if self._settings.output_format != "svg":
                     if render.svg_path:
                         record.svg_path = render.svg_path
-                    else:
+                        if engine == "drawio":
+                            logger.info(
+                                "第 %d 轮：SVG 产物 -> %s", round_no, render.svg_path
+                            )
+                    elif engine != "drawio":
                         svg = render_mermaid(
                             styled, output_dir, stem=f"round_{round_no}", fmt="svg",
                             background=bg, chrome_path=self._settings.chrome_path,
@@ -208,12 +352,60 @@ class FlowchartAgent:
                 feedback = critique
                 logger.warning("第 %d 轮：视觉验证不通过 -> %s", round_no, critique[:200])
 
-            # 超出最大轮次：保留最后一轮状态
+            # 超出最大轮次，任务失败。兜底发布分两级：
             logger.warning("达到最大轮次 %d，任务失败", self._settings.max_rounds)
-            last = result.rounds[-1]
-            result.mermaid_code = last.mermaid_code
-            result.image_path = last.image_path
-            result.final_feedback = last.feedback
+            result.final_feedback = result.rounds[-1].feedback
+
+            # 1) 有任何一轮成功渲染出图：发布该版本（未通过检视，仅供参考），
+            #    不呈现失败卡片——能看的真图比卡片有用
+            rendered = next(
+                (r for r in reversed(result.rounds) if r.image_path is not None),
+                None,
+            )
+            if rendered is not None:
+                result.mermaid_code = rendered.mermaid_code
+                result.image_path = rendered.image_path
+                logger.info("兜底发布最后一版可渲染的图（第 %d 轮产物）", rendered.round_no)
+                return result
+
+            # 2) 所有轮次连图都渲不出来：发布"失败卡片"（两框：失败代码 +
+            #    失败原因），保证 current/final 一定是可渲染的图；
+            #    原始各轮产物仍在 run 目录
+            result.mermaid_code = next(
+                (r.mermaid_code for r in reversed(result.rounds) if r.mermaid_code),
+                "",
+            )
+            if engine == "drawio":
+                card_xml = _failure_card_drawio(result.mermaid_code, result.final_feedback)
+                card_path = output_dir / "failure_card.drawio"
+                card_path.write_text(card_xml, encoding="utf-8")
+                card_img = render_drawio(
+                    card_path,
+                    output_dir / f"failure_card.{self._drawio_fmt()}",
+                    self._settings.drawio_path, fmt=self._drawio_fmt(),
+                    scale=int(self._settings.render_scale or "2"),
+                )
+                if card_img:
+                    result.mermaid_code = card_xml
+                    result.image_path = card_img
+                    logger.info("失败卡片已生成：%s", card_img)
+                else:  # 卡片渲染失败不应发生
+                    logger.warning("失败卡片渲染失败（不应发生）")
+                return result
+            card_code = _failure_card(result.mermaid_code, result.final_feedback)
+            card = render_mermaid(
+                card_code, output_dir, stem="failure_card",
+                fmt=self._settings.output_format, background=bg,
+                chrome_path=self._settings.chrome_path,
+                scale=self._settings.render_scale,
+                width=self._settings.render_width,
+            )
+            if card.ok:
+                result.mermaid_code = card_code
+                result.image_path = card.image_path
+                logger.info("失败卡片已生成：%s", card.image_path)
+            else:  # 卡片渲染失败不应发生
+                logger.warning("失败卡片渲染失败（不应发生）：%s", card.error[:200])
             return result
         finally:
             self._detach_run_log(handler)
@@ -233,6 +425,34 @@ class FlowchartAgent:
         logging.getLogger("flowchart_agent").removeHandler(handler)
         handler.close()
 
+    def _drawio_fmt(self) -> str:
+        """drawio 引擎的出图格式：draw.io CLI 支持 png/svg/pdf。"""
+        fmt = self._settings.output_format
+        return fmt if fmt in ("png", "svg", "pdf") else "png"
+
+    def _render_drawio(self, xml_text: str, output_dir: Path, round_no: int):
+        """渲染一轮 drawio 产物（.drawio + 图片 + SVG），返回与 RenderResult 同形的对象。"""
+        fmt = self._drawio_fmt()
+        xml_path = output_dir / f"round_{round_no}.drawio"
+        xml_path.write_text(xml_text, encoding="utf-8")
+        image = render_drawio(
+            xml_path, output_dir / f"round_{round_no}.{fmt}",
+            self._settings.drawio_path, fmt=fmt,
+            scale=int(self._settings.render_scale or "2"),
+        )
+        if image is None:
+            return SimpleNamespace(
+                ok=False, image_path=None, svg_path=None,
+                error="draw.io 渲染失败（详见上方 [drawio] 日志）",
+            )
+        svg_path = None
+        if fmt != "svg":
+            svg_path = render_drawio(
+                xml_path, output_dir / f"round_{round_no}.svg",
+                self._settings.drawio_path, fmt="svg",
+            )
+        return SimpleNamespace(ok=True, image_path=image, svg_path=svg_path, error=None)
+
     def _generate(
         self,
         document: str,
@@ -240,8 +460,47 @@ class FlowchartAgent:
         feedback: str,
         image: Path | None = None,
         on_delta=None,
+        style: Style | None = None,
+        engine: str = "mermaid",
+        diagram_type: str = "",
     ) -> tuple[str, str]:
-        """返回 (提取出的 Mermaid 代码, 模型原始输出)。image 为参考图（多模态模型时）。"""
+        """返回 (提取出的图表代码, 模型原始输出)。image 为参考图（多模态模型时）。
+
+        style 的正文说明（prompt_hint）并入生成 prompt，让默认/显式风格都被
+        生成模型看到；chat 显式风格已把 hint 写进需求（session.create），
+        这里按内容去重避免重复注入。drawio 引擎改为注入 style 的引擎专属
+        规则段（engine_hints），缺失时提示词回落内置默认配色。
+        """
+        if engine == "drawio":
+            style_rules = (
+                style.engine_hint("drawio", diagram_type) if style else ""
+            )
+            if style and not style_rules:
+                logger.info("风格插件 %s 没有 drawio:%s 规则段，使用内置默认配色",
+                            style.name, diagram_type)
+            system = prompts.drawio_system_prompt(diagram_type, style_rules)
+            if not prev_code:
+                user = prompts.DRAWIO_USER.format(document=document)
+                if image:
+                    user += "\n\n（附带的图片是需求参考，请结合图片内容理解需求。）"
+            else:
+                user = prompts.DRAWIO_REVISE_USER.format(
+                    document=document, code=prev_code, feedback=feedback
+                )
+                if image:
+                    user += "\n\n（附带的图片是当前图的渲染结果，请在此基础上修改。）"
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+            if image:
+                messages = self._text_llm.with_images(messages, [image])
+            if on_delta is not None:
+                raw = self._text_llm.chat_stream(messages, on_delta)
+            else:
+                raw = self._text_llm.chat(messages)
+            return extract_xml(raw), raw
+
         if not prev_code:
             user = prompts.GENERATE_USER.format(document=document)
             if image:
@@ -252,6 +511,11 @@ class FlowchartAgent:
             )
             if image:
                 user += "\n\n（附带的图片是当前流程图的渲染结果，请在此基础上修改。）"
+        if style and style.prompt_hint and style.prompt_hint not in document:
+            user += (
+                f"\n\n作图风格要求（{style.name}——{style.description}），"
+                f"请严格遵循：\n{style.prompt_hint}"
+            )
         messages = [
             {"role": "system", "content": prompts.GENERATE_SYSTEM},
             {"role": "user", "content": user},
