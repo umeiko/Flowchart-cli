@@ -5,12 +5,16 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
 - 分层：从入度为 0 的起点做最长路分层（自上而下，一层一行）；
 - 层内排序：barycenter 启发式（两遍向下 + 一遍向上），平局保持 XML 书写
   顺序——判断节点先写的分支排左、后写的排右；
-- 坐标：所有节点严格等大（W×H），每层水平居中于最宽层；
+- 坐标：所有节点严格等大（W×H），每层水平居中于最宽层；「结束/终止/End」
+  类无出边终节点强制沉底（最末层被流程步骤占用时独占新起一行）；
 - 连线：强制规范化为直角正交走线（orthogonalEdgeStyle;rounded=0），
   按相对位置写 exit/entry 附着点，模型写的走线样式与几何一律清除；
   路径由确定性通道路由计算（draw.io 的正交路由器不规避障碍物，
   跳边会穿刺中间节点）：在列间隙/左右页边找垂直通道，绕不开的边
-  以 Z/U 形显式拐点（mxPoint）绕行，已布线段占用车道防止线线重叠。
+  以 Z/U 形显式拐点（mxPoint）绕行，已布线段占用车道防止线线重叠
+  （同向共边的锚点短桩允许总线共享，反向不共享）；判断节点（rhombus）
+  的多条出边按 [朝目标侧→底边→另一侧] 动态尝试且不共享车道——
+  是/否必然异侧出行；汇合点（入度≥2）的下行入边优先底出连成总线。
 
 环（回退边）不参与分层：拓扑排序残留的节点按已分层前驱的最大层 +1 落位。
 """
@@ -18,6 +22,7 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -46,11 +51,14 @@ class _Router:
     候选垂直通道 = 节点包围盒在 x 轴上的间隙中点（含 ±车道偏移）+
     左右页边。每条边的路径逐段做两种检查：
     - 不与任何节点包围盒内部相交（与目标节点相连的末段豁免目标自身）；
-    - 不与已提交线段共线重叠（垂直交叉是正常走线，允许；同源边在
-      出口扇区、同目标边在入口扇区内的重叠视为总线共享，也允许）。
+    - 不与已提交线段共线重叠（垂直交叉是正常走线，允许；同向共边在
+      节点邻域内的重叠视为总线共享——但判断节点（decisions）不豁免，
+      是/否分支必须从不同的边出去，走向才明确）。
     """
 
-    def __init__(self, pos: dict[str, tuple[float, float]]):
+    def __init__(self, pos: dict[str, tuple[float, float]],
+                 decisions: set[str] | None = None):
+        self.decisions = decisions or set()
         self.rects = {i: (x, y, x + W, y + H) for i, (x, y) in pos.items()}
         bounds = sorted({v for r in self.rects.values() for v in (r[0], r[2])})
         self.xlo, self.xhi = bounds[0], bounds[-1]
@@ -108,7 +116,8 @@ class _Router:
                 if hi - lo <= _PAD:
                     continue
                 shared = s if cs == s else (t if ct == t else None)
-                if shared is not None and _inside(self._vicinity(shared), lo, hi):
+                if (shared is not None and shared not in self.decisions
+                        and _inside(self._vicinity(shared), lo, hi)):
                     continue
                 return False
             elif y1 == y2 and b == d and abs(y1 - b) < _MERGE:
@@ -117,7 +126,7 @@ class _Router:
                 if hi - lo <= _PAD:
                     continue
                 shared = s if cs == s else (t if ct == t else None)
-                if shared is not None:
+                if shared is not None and shared not in self.decisions:
                     z = self._vicinity(shared)
                     if z[0] <= y1 <= z[1]:
                         continue
@@ -169,10 +178,15 @@ class _Router:
             return None
         return best[1], (0.5, 1), (0.5, 0)
 
-    def route_down_side(self, s: str, t: str) -> tuple[list, tuple, tuple] | None:
-        """下行且目标在侧方：从侧边出，经垂直通道，从顶/侧进。"""
+    def route_down_side(self, s: str, t: str,
+                        outward: int | None = None) -> tuple[list, tuple, tuple] | None:
+        """下行且目标在侧方：从侧边出，经垂直通道，从顶/侧进。
+
+        outward：强制出口侧（1 右 / -1 左）；None 时按目标方位自动选。
+        """
         sr, tr = self.rects[s], self.rects[t]
-        outward = 1 if tr[0] >= sr[0] else -1
+        if outward is None:
+            outward = 1 if tr[0] >= sr[0] else -1
         exit_p = (1, 0.5) if outward > 0 else (0, 0.5)
         exit_x = sr[2] if outward > 0 else sr[0]
         exit_y = (sr[1] + sr[3]) / 2
@@ -207,33 +221,39 @@ class _Router:
         """回边（目标在上方）。两种模板，全局取最短无遮挡：
 
         A. 侧出侧进：经外侧页边/间隙通道，左右两侧都试（反向边不允许
-           与进边共享顶边短桩，自然侧被占时从另一侧绕行）；
+           与进边共享顶边短桩，自然侧被占时从另一侧绕行）；出/入口
+           附着点可在侧边上纵向偏移（0.5/0.3/0.7），避开目标侧边上
+           已占用的反向短桩；
         B. 顶出侧进：从源节点顶边垂直上行，经通道转入目标朝通道的侧边
            （同排邻居挡住侧出水平段时的退路）。
         """
         sr, tr = self.rects[s], self.rects[t]
         best = None
 
-        # A. 侧出侧进（两侧）
+        # A. 侧出侧进（两侧 × 附着点偏移）
         for side in (outward, -outward):
-            exit_p = (1, 0.5) if side > 0 else (0, 0.5)
             exit_x = sr[2] if side > 0 else sr[0]
-            exit_y = (sr[1] + sr[3]) / 2
             entry_x = tr[2] if side > 0 else tr[0]
-            entry_y = (tr[1] + tr[3]) / 2
-            for cx in self.cands:
-                limit = (max(exit_x, entry_x) + 2 if side > 0
-                         else min(exit_x, entry_x) - 2)
-                if side > 0 and cx < limit:
-                    continue
-                if side < 0 and cx > limit:
-                    continue
-                pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry_y), (entry_x, entry_y)]
-                if self._ok(_segs_of(pts, t), s, t):
-                    cand = (self._len(pts) + self._penalty(cx), pts[1:-1],
-                            exit_p, exit_p)
-                    if best is None or cand[0] < best[0]:
-                        best = cand
+            for exf in (0.5, 0.3, 0.7):
+                for enf in (0.5, 0.3, 0.7):
+                    exit_p = (1 if side > 0 else 0, exf)
+                    entry_p = (1 if side > 0 else 0, enf)
+                    exit_y = sr[1] + exf * H
+                    entry_y = tr[1] + enf * H
+                    for cx in self.cands:
+                        limit = (max(exit_x, entry_x) + 2 if side > 0
+                                 else min(exit_x, entry_x) - 2)
+                        if side > 0 and cx < limit:
+                            continue
+                        if side < 0 and cx > limit:
+                            continue
+                        pts = [(exit_x, exit_y), (cx, exit_y),
+                               (cx, entry_y), (entry_x, entry_y)]
+                        if self._ok(_segs_of(pts, t), s, t):
+                            cand = (self._len(pts) + self._penalty(cx),
+                                    pts[1:-1], exit_p, entry_p)
+                            if best is None or cand[0] < best[0]:
+                                best = cand
 
         # B. 顶出侧进
         x0 = (sr[0] + sr[2]) / 2
@@ -283,6 +303,37 @@ def _anchor(rect: tuple, p: tuple) -> tuple:
     return (rect[0] + p[0] * W, rect[1] + p[1] * H)
 
 
+_TERMINAL_RE = re.compile(r"^\s*(结束|终止|end\b)", re.IGNORECASE)
+
+
+def _sink_terminals_to_bottom(vertices: list[ET.Element],
+                              succs: dict[str, list[str]],
+                              layer: dict[str, int]) -> None:
+    """名为「结束/终止/End」且无出边的终节点沉到最末层。
+
+    主流程的终点不应出现在图中间（会让大量连线回绕）；结束节点带有
+    出边属于建模错误，不强行沉底，打 warning 交给检视环节拦截。
+    """
+    if not layer:
+        return
+    terminals = {c.get("id") for c in vertices
+                 if _TERMINAL_RE.match(c.get("value") or "")}
+    for c in vertices:
+        i = c.get("id")
+        if i in terminals and succs.get(i):
+            logger.warning(
+                "结束类节点「%s」带有出边（不应位于流程中段），请检查建模",
+                c.get("value"))
+    last = max(layer.values())
+    # 最末层被非终节点占用时（如循环体比主流程更深），终节点独占新起的一行，
+    # 不与流程步骤并排——结束节点必须在图的最底部且独占一行
+    if any(l == last and i not in terminals for i, l in layer.items()):
+        last += 1
+    for i in terminals:
+        if not succs.get(i):
+            layer[i] = last
+
+
 def apply_flow_layout(xml_text: str) -> str:
     """给不带几何信息的流程图 mxfile XML 注入计算好的布局，返回新 XML。"""
     root = ET.fromstring(xml_text)
@@ -320,14 +371,24 @@ def apply_flow_layout(xml_text: str) -> str:
 
     order = [c.get("id") for c in vertices]  # XML 书写顺序（平局时的稳定次序）
     layers_of = _assign_layers(ids, preds, succs, order)
+    _sink_terminals_to_bottom(vertices, succs, layers_of)
     layered = _order_layers(ids, layers_of, preds, succs, order)
     pos = _positions(layered)
 
-    router = _Router(pos)
+    decisions = {c.get("id") for c in vertices if "rhombus" in (c.get("style") or "")}
+    router = _Router(pos, decisions)
+    join_nodes = {i for i in ids if len(preds[i]) >= 2}
     for node_id, (x, y) in pos.items():
         _set_geometry(by_id[node_id], x, y)
-    for e in edges:
-        _normalize_edge(e, router)
+    # 按曼哈顿距离升序路由：短边/同列直连先占位，长跳边后绕——
+    # 否则跳边先占了判断节点的底边出口，同列直连的分支反而被迫侧出
+    edges_sorted = sorted(
+        edges,
+        key=lambda e: abs(pos[e.get("target")][0] - pos[e.get("source")][0])
+        + abs(pos[e.get("target")][1] - pos[e.get("source")][1]),
+    )
+    for e in edges_sorted:
+        _normalize_edge(e, router, join_nodes)
 
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
@@ -421,17 +482,41 @@ def _set_geometry(cell: ET.Element, x: float, y: float) -> None:
     geo.set("as", "geometry")
 
 
-def _normalize_edge(edge: ET.Element, router: _Router) -> None:
-    """规范化连线：强制直角正交走线，算好附着点与绕障拐点。"""
+def _normalize_edge(edge: ET.Element, router: _Router,
+                    join_nodes: set[str] | None = None) -> None:
+    """规范化连线：强制直角正交走线，算好附着点与绕障拐点。
+
+    join_nodes：入度 ≥2 的汇合节点——其下行入边优先底出顶进，
+    在汇合带上连成总线后单箭头落入（侧出会形成难看的并行缺口）。
+
+    判断节点（rhombus）的下行出边按 [朝目标侧 → 底边 → 另一侧] 的顺序
+    动态尝试；判断节点不享受车道共享豁免，已被兄弟分支占用的出口侧
+    会因短桩冲突自动失败——是/否必然异侧出行，走向明确。
+    """
     s, t = edge.get("source"), edge.get("target")
     sr, tr = router.rects[s], router.rects[t]
     dx, dy = tr[0] - sr[0], tr[1] - sr[1]
     wps: list[tuple] = []
     if dy > 0:  # 向下：同列底出顶进；左右分叉优先侧边出，侧出无解再底出绕行
         if abs(dx) < 1:
-            routed = router.route_down_bottom(s, t)
+            tries = ["bottom", "right", "left"] if s in router.decisions else ["bottom"]
         else:
-            routed = router.route_down_side(s, t) or router.route_down_bottom(s, t)
+            pref = "right" if dx > 0 else "left"
+            other = "left" if pref == "right" else "right"
+            if s in router.decisions:
+                tries = [pref, "bottom", other]
+            elif join_nodes and t in join_nodes:
+                tries = ["bottom", pref]
+            else:
+                tries = [pref, "bottom"]
+        routed = None
+        for how in tries:
+            if how == "bottom":
+                routed = router.route_down_bottom(s, t)
+            else:
+                routed = router.route_down_side(s, t, 1 if how == "right" else -1)
+            if routed is not None:
+                break
         if routed is None:
             logger.warning("边 %s -> %s 找不到无遮挡通道，退回 draw.io 自动走线", s, t)
             exit_p, entry_p = (0.5, 1), (0.5, 0)
