@@ -88,18 +88,18 @@ class _Router:
             for i, r in self.rects.items()
         )
 
-    def _fanout(self, i: str) -> tuple[float, float]:
-        """节点的出口扇区 y 区间（同源边在此区间内的重叠算总线共享）。"""
-        r = self.rects[i]
-        return (r[1] - 1, r[3] + GAP_Y)
+    def _vicinity(self, i: str) -> tuple[float, float]:
+        """节点的邻域 y 区间（自身 + 上下各一个行间隙带）。
 
-    def _fanin(self, i: str) -> tuple[float, float]:
-        """节点的入口扇区 y 区间（同目标边汇入时的共享区）。"""
+        同向共边（committed 边与本边同源=都离开、或同目标=都进入）在此
+        区间内的共线重叠视为锚点短桩共享（总线）；反向共边不豁免——
+        方向相反的两个箭头不允许在同一条边上重叠。
+        """
         r = self.rects[i]
-        return (r[1] - GAP_Y, r[3] + 1)
+        return (r[1] - GAP_Y, r[3] + GAP_Y)
 
     def _free_lane(self, seg: tuple, s: str, t: str) -> bool:
-        """线段不与已提交线段共线重叠（允许垂直交叉与总线共享）。"""
+        """线段不与已提交线段共线重叠（允许垂直交叉与锚点短桩共享）。"""
         x1, y1, x2, y2 = seg
         for a, b, c, d, cs, ct in self.committed:
             if x1 == x2 and a == c and abs(x1 - a) < _MERGE:
@@ -107,9 +107,8 @@ class _Router:
                 hi = min(max(y1, y2), max(b, d))
                 if hi - lo <= _PAD:
                     continue
-                if cs == s and _inside(self._fanout(s), lo, hi):
-                    continue
-                if ct == t and _inside(self._fanin(t), lo, hi):
+                shared = s if cs == s else (t if ct == t else None)
+                if shared is not None and _inside(self._vicinity(shared), lo, hi):
                     continue
                 return False
             elif y1 == y2 and b == d and abs(y1 - b) < _MERGE:
@@ -117,10 +116,11 @@ class _Router:
                 hi = min(max(x1, x2), max(a, c))
                 if hi - lo <= _PAD:
                     continue
-                if cs == s and self._fanout(s)[0] <= y1 <= self._fanout(s)[1]:
-                    continue
-                if ct == t and self._fanin(t)[0] <= y1 <= self._fanin(t)[1]:
-                    continue
+                shared = s if cs == s else (t if ct == t else None)
+                if shared is not None:
+                    z = self._vicinity(shared)
+                    if z[0] <= y1 <= z[1]:
+                        continue
                 return False
         return True
 
@@ -176,15 +176,25 @@ class _Router:
         exit_p = (1, 0.5) if outward > 0 else (0, 0.5)
         exit_x = sr[2] if outward > 0 else sr[0]
         exit_y = (sr[1] + sr[3]) / 2
+        entry_cx = (tr[0] + tr[2]) / 2  # 目标顶边中心：最优通道，可免末段横移折叠
         best = None
-        for cx in self.cands:
+        seen = set()
+        for cx in [entry_cx, *self.cands]:
+            if cx in seen:
+                continue
+            seen.add(cx)
             if tr[0] - 2 <= cx <= tr[2] + 2:  # 通道在目标正上方：从顶进
+                # 横移在目标上方的行间空隙带完成，末段竖直落入顶边中心，
+                # 保证箭头朝下居中（贴着顶边横移会把箭头画成侧向）
                 entry_p = (0.5, 0)
                 entry = ((tr[0] + tr[2]) / 2, tr[1])
+                yb = tr[1] - GAP_Y / 2
+                pts = [(exit_x, exit_y), (cx, exit_y), (cx, yb),
+                       (entry[0], yb), entry]
             else:  # 通道在目标侧方：从朝通道的侧边进
                 entry_p = (1, 0.5) if cx > tr[2] else (0, 0.5)
                 entry = ((tr[2] if cx > tr[2] else tr[0]), (tr[1] + tr[3]) / 2)
-            pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry[1]), entry]
+                pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry[1]), entry]
             if self._ok(_segs_of(pts, t), s, t):
                 cand = (self._len(pts) + self._penalty(cx), pts[1:-1], entry_p)
                 if best is None or cand[0] < best[0]:
@@ -194,28 +204,59 @@ class _Router:
         return best[1], exit_p, best[2]
 
     def route_back(self, s: str, t: str, outward: int) -> tuple[list, tuple, tuple] | None:
-        """回边（目标在上方）：从侧边出，经外侧页边/间隙通道，从同侧进。"""
+        """回边（目标在上方）。两种模板，全局取最短无遮挡：
+
+        A. 侧出侧进：经外侧页边/间隙通道，左右两侧都试（反向边不允许
+           与进边共享顶边短桩，自然侧被占时从另一侧绕行）；
+        B. 顶出侧进：从源节点顶边垂直上行，经通道转入目标朝通道的侧边
+           （同排邻居挡住侧出水平段时的退路）。
+        """
         sr, tr = self.rects[s], self.rects[t]
-        exit_p = (1, 0.5) if outward > 0 else (0, 0.5)
-        exit_x = sr[2] if outward > 0 else sr[0]
-        exit_y = (sr[1] + sr[3]) / 2
-        entry_x = tr[2] if outward > 0 else tr[0]
-        entry_y = (tr[1] + tr[3]) / 2
         best = None
-        for cx in self.cands:
-            limit = max(exit_x, entry_x) + 2 if outward > 0 else min(exit_x, entry_x) - 2
-            if outward > 0 and cx < limit:
-                continue
-            if outward < 0 and cx > limit:
-                continue
-            pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry_y), (entry_x, entry_y)]
+
+        # A. 侧出侧进（两侧）
+        for side in (outward, -outward):
+            exit_p = (1, 0.5) if side > 0 else (0, 0.5)
+            exit_x = sr[2] if side > 0 else sr[0]
+            exit_y = (sr[1] + sr[3]) / 2
+            entry_x = tr[2] if side > 0 else tr[0]
+            entry_y = (tr[1] + tr[3]) / 2
+            for cx in self.cands:
+                limit = (max(exit_x, entry_x) + 2 if side > 0
+                         else min(exit_x, entry_x) - 2)
+                if side > 0 and cx < limit:
+                    continue
+                if side < 0 and cx > limit:
+                    continue
+                pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry_y), (entry_x, entry_y)]
+                if self._ok(_segs_of(pts, t), s, t):
+                    cand = (self._len(pts) + self._penalty(cx), pts[1:-1],
+                            exit_p, exit_p)
+                    if best is None or cand[0] < best[0]:
+                        best = cand
+
+        # B. 顶出侧进
+        x0 = (sr[0] + sr[2]) / 2
+        yb = sr[1] - GAP_Y / 2  # 源节点上方的行间空隙带（竖直方向无节点）
+        ey = (tr[1] + tr[3]) / 2
+        seen = set()
+        for cx in [x0, *self.cands]:
+            if cx in seen or tr[0] - 2 <= cx <= tr[2] + 2:
+                continue  # 通道落在目标正上方时侧进会横穿目标，跳过
+            seen.add(cx)
+            entry_p = (1, 0.5) if cx > tr[2] else (0, 0.5)
+            entry_x = tr[2] if cx > tr[2] else tr[0]
+            pts = [(x0, sr[1]), (x0, yb), (cx, yb), (cx, ey), (entry_x, ey)]
+            pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
             if self._ok(_segs_of(pts, t), s, t):
-                cand = (self._len(pts) + self._penalty(cx), pts[1:-1])
+                cand = (self._len(pts) + self._penalty(cx), pts[1:-1],
+                        (0.5, 0), entry_p)
                 if best is None or cand[0] < best[0]:
                     best = cand
+
         if best is None:
             return None
-        return best[1], exit_p, exit_p
+        return best[1], best[2], best[3]
 
 
 def _inside(zone: tuple[float, float], lo: float, hi: float) -> bool:
