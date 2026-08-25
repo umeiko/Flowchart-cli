@@ -208,7 +208,7 @@ VISION_MODEL_NAME / VISION_MODEL_API_KEY / VISION_MODEL_BASE_URL
 ### FR-6 对话式主 Agent（chat 模式）
 - 交互式 REPL：用户口述需求或给出文档路径，主 Agent 通过 function calling 调度 Skill 完成。
 - 路径有误时主 Agent 能自我纠正：`read_document` 报错自带相似文件候选，另有 `find_files` 模糊查找 Skill，要求自动重试 2~3 次后才向用户求助。
-- 图像输入（`TEXT_MODEL_VISION=true` 时启用）：用户可在 TUI 拖入图片（显示为彩色芯片，Backspace 整块删除）随消息发给主模型；`read_image` Skill 支持模型主动查看指定路径图片；`create_diagram` 接受 `image_path` 参考图；修改时把当前渲染图一并发给主模型。无视觉能力时 `read_image` 不下发，图片输入给出明确提示。
+- 文件拖入：用户可在 TUI 拖入任意文件（文档/图片等），显示为彩色 `[文件:文件名]` 芯片（Backspace 整块删除），提交时还原为完整路径随消息发出；其中图片文件在 `TEXT_MODEL_VISION=true` 时额外作为图片发给主模型。`read_image` Skill 支持模型主动查看指定路径图片；`create_diagram` 接受 `image_path` 参考图；修改时把当前渲染图一并发给主模型。无视觉能力时 `read_image` 不下发，图片输入给出明确提示。
 - 主模型无视觉能力（`TEXT_MODEL_VISION=false`）时注册 `ocr_image` 工具：
   用多模态验证模型（VISION_MODEL）从素材图片逐字提取文字，是图表时附带
   连接关系描述；用户贴图的路径随消息进入对话，由 Agent 自行调用 OCR。
