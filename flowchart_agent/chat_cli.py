@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+from itertools import zip_longest
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -35,6 +36,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from . import __version__
+from .banner_logo import LOGO_WIDTH, logo_lines
 from .config import Settings
 from .main_agent import MainAgent
 from .session import DiagramSession
@@ -439,23 +441,20 @@ class _CommandRunner:
 def _print_banner(
     output_dir: Path, settings: Settings, yolo: bool = False, session_engine: str = ""
 ) -> None:
-    """启动横幅：极简数字小助手吉祥物 + 右侧状态栏（markup 由 rich 渲染）。
+    """启动横幅：点阵盲文 logo（banner_logo.py）+ 右侧状态栏（markup 由 rich 渲染）。
 
-    左列吉祥物全部是单宽字符（ASCII + 制表符），ljust 对齐后拼接右侧信息；
-    中文只出现在右列，不参与左列对齐计算。
+    左列 logo 全部是单宽字符（Braille Patterns），已由 logo_lines 右侧
+    补齐到 LOGO_WIDTH，直接与右列拼接；中文只出现在右列，不参与左列对齐。
     """
     vision = "已开启" if settings.text_model_vision else "未开启"
-    mascot = [
-        "         [bright_cyan]✧ ˚ · .[/]",
-        "        [bright_blue]╭───────╮[/]",
-        "        [bright_blue]│ [bright_white]●   ●[bright_blue] │[/]",
-        "        [bright_blue]│ [bright_white]  v  [bright_blue] │[/]",
-        "        [bright_blue]╰───┬───╯[/]",
-        "       [bright_cyan]╭────┴────╮[/]",
-        "       [bright_cyan]│ [bright_blue]  < /> [bright_cyan] │[/]",
-        "       [bright_cyan]╰─────────╯[/]",
-    ]
-    # 右列与吉祥物逐行对齐；可见宽度 ljust 到 21（左列最长 18）
+    # 盲文（U+2800–U+28FF）不在 GBK 里：GBK 代码页的老终端打不出来，
+    # 探测当前编码，不支持就跳过图案只留文字信息，避免启动即崩
+    try:
+        "⠀".encode(sys.stdout.encoding or "utf-8")
+        mascot = logo_lines("bright_white")
+    except (UnicodeEncodeError, LookupError):
+        mascot = []
+    # 右列与 logo 逐行对齐
     info = [
         "",
         f"[bold bright_white]Hi, I'm Flowchart AI Agent.[/]  [bright_black]v{__version__}[/]",
@@ -468,10 +467,16 @@ def _print_banner(
         f"[bright_black]{output_dir}[/]",
     ]
     console.print()
-    for left, right in zip(mascot, info):
-        visible = left.replace("[bright_cyan]", "").replace("[bright_blue]", "") \
-            .replace("[bright_white]", "").replace("[/]", "")
-        console.print(left + " " * (21 - len(visible)) + right)
+    # 终端够宽才左右双栏；窄终端 logo 与信息上下排列，避免信息栏折行错位
+    if mascot and console.width >= LOGO_WIDTH + 66:
+        for left, right in zip_longest(mascot, info, fillvalue=""):
+            console.print(left + ("  " + right if right else ""))
+    else:
+        for line in mascot:
+            console.print(line)
+        for line in info:
+            if line:
+                console.print("  " + line)
     console.print()
     if yolo:
         console.print(

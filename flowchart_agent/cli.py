@@ -16,6 +16,7 @@ from .agent import FlowchartAgent
 from .chat_cli import run_chat
 from .config import load_settings
 from .drawio import check_drawio_available, render_drawio
+from .fonts import check_font_available, register_fonts
 from .mermaid import render_mermaid
 from .styles import get_style, load_styles
 
@@ -50,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as e:
         print(f"错误：{e}", file=sys.stderr)
         return 2
+
+    # 自带字体目录（Fonts/）注册进当前会话：之后启动的 draw.io / Chrome
+    # 渲染子进程无需系统安装即可用到这些字体
+    register_fonts()
+    font_hint = check_font_available(settings.drawio_font_family)
+    if font_hint:
+        print(f"提示：{font_hint}", file=sys.stderr)
 
     if args.command == "chat":
         return run_chat(settings, args.output, yolo=args.yolo)

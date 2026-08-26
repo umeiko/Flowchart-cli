@@ -70,6 +70,9 @@ npm install -g @mermaid-js/mermaid-cli
 #    供 scripts/mermaid_parse.mjs 使用；可选但推荐，
 #    跳过则自动退回纯 mmdc 校验，不影响主流程）
 npm install
+
+# 5) draw.io 桌面版（仅 drawio 引擎需要；下载安装后在 .env 配 DRAWIO_PATH）
+#    https://github.com/jgraph/drawio-desktop/releases/latest
 ```
 
 Windows 用户建议使用 Windows Terminal 或 VS Code 终端。
@@ -85,9 +88,17 @@ cp .env.example .env
 Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`（或 Edge），工具会
 自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §5.3。
 
-出图引擎通过 `OUTPUT_ENGINE` 选择：`mermaid`（默认）或 `drawio`（需另装 draw.io
-桌面版并在 `DRAWIO_PATH` 配置其路径；drawio 引擎产出可二次编辑的 `.drawio` 文件）。
-会话中也可用 `/engine` 命令或对 Agent 说"切换引擎"随时切换。
+出图引擎通过 `OUTPUT_ENGINE` 选择：`mermaid`（默认）或 `drawio`。drawio 引擎
+**需要先安装 draw.io 桌面版**，官方下载地址：
+<https://github.com/jgraph/drawio-desktop/releases/latest>（Windows 选
+`draw.io-x.y.z-windows-installer.exe`，macOS 选对应芯片的 `.dmg`），装好后在
+`.env` 的 `DRAWIO_PATH` 配置其可执行文件路径（Windows 默认
+`C:\Program Files\draw.io\draw.io.exe`）。drawio 引擎产出可二次编辑的 `.drawio`
+文件。会话中也可用 `/engine` 命令或对 Agent 说"切换引擎"随时切换。
+
+字体规范（drawio 引擎）：`.env` 设 `DRAWIO_FONT_FAMILY` / `DRAWIO_FONT_SIZE` 即可
+统一全图字体字号。字体文件无需手动安装——把 `.ttf/.otf` 放进项目根 `Fonts/` 目录，
+启动时自动按当前用户注册（无需管理员；目录可用 `FLOWCHART_FONT_DIR` 覆盖）。
 
 ## 使用
 

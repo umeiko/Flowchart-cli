@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -29,3 +30,41 @@ def sanitize_xml(text: str) -> str:
             logger.warning("自动转义 value 属性中的字面 <br/>")
         return f'value="{fixed}"'
     return re.sub(r'value="([^"]*)"', _fix, text)
+
+
+def apply_font(xml_text: str, family: str | None, size: str | None) -> str:
+    """给所有 cell 的 style 注入/覆盖 fontFamily 与 fontSize。
+
+    确定性后处理（不信任 LLM 照抄骨架里的字体字段）：family/size 为
+    None 的项不注入。字号按原样写入（drawio 接受小数如 10.5），
+    无法解析为数字时打 warning 并跳过字号注入。
+    注意：字体需本机已安装，未安装时 draw.io 静默回退默认字体。
+    """
+    props: dict[str, str] = {}
+    if family:
+        props["fontFamily"] = family
+    if size:
+        try:
+            float(size)
+        except ValueError:
+            logger.warning("DRAWIO_FONT_SIZE=%r 不是数字，跳过字号注入", size)
+        else:
+            props["fontSize"] = size
+    if not props:
+        return xml_text
+
+    root = ET.fromstring(xml_text)
+    for cell in root.iter("mxCell"):
+        style = cell.get("style")
+        if not style:
+            continue
+        parts = [p for p in style.split(";") if p]
+        keys = [p.split("=", 1)[0] for p in parts]
+        for k, v in props.items():
+            if k in keys:
+                parts[keys.index(k)] = f"{k}={v}"
+            else:
+                parts.append(f"{k}={v}")
+        cell.set("style", ";".join(parts) + ";")
+    logger.info("[drawio] 字体注入：%s", " ".join(f"{k}={v}" for k, v in props.items()))
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)

@@ -5,4 +5,4 @@ try:
 
     __version__ = _pkg_version("flowchart-ai")
 except Exception:  # 未以包形式安装（直接源码运行）时的回退
-    __version__ = "1.2.0"
+    __version__ = "1.3.0"

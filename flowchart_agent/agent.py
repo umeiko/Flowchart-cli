@@ -16,6 +16,7 @@ from .config import Settings
 from .drawio import (
     DrawioNotFoundError,
     apply_flow_layout,
+    apply_font,
     apply_layout,
     check_drawio_available,
     extract_xml,
@@ -278,6 +279,13 @@ class FlowchartAgent:
                             else apply_layout
                         )
                         styled = layout_fn(sanitize_xml(code))
+                        # 字体后处理（.env DRAWIO_FONT_FAMILY/DRAWIO_FONT_SIZE，
+                        # 未配置时原样返回），让产物 .drawio 也带上规范字体
+                        styled = apply_font(
+                            styled,
+                            self._settings.drawio_font_family,
+                            self._settings.drawio_font_size,
+                        )
                     except (ET.ParseError, ValueError) as e:
                         feedback = (
                             f"你的输出不是合法的 drawio {diagram_type} XML（{e}）。"

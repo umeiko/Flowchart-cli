@@ -50,6 +50,12 @@ class Settings:
     # min(自然宽度, 4096) 渲染——甘特图等自适应视口的图型按自然比例渲染，
     # 超宽流程图不被 mmdc 默认 800 视口压扁；填数字则固定视口宽度（旧行为）
     render_width: str = "auto"
+    # drawio 引擎的字体覆盖（确定性后处理注入到每个 cell 的 style，
+    # 不信任 LLM 照抄骨架）：None = 不注入，保持骨架默认。
+    # 字体来源：系统已安装字体 + 自带 Fonts/ 目录（cli 启动时按当前用户
+    # 自动安装，见 fonts.py）；都没装时 draw.io 静默回退默认字体
+    drawio_font_family: str | None = None
+    drawio_font_size: str | None = None
 
 
 def _require(key: str) -> str:
@@ -99,4 +105,6 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
         render_width=os.getenv("RENDER_WIDTH") or "auto",
         text_model_vision=os.getenv("TEXT_MODEL_VISION", "").lower()
         in ("1", "true", "yes"),
+        drawio_font_family=os.getenv("DRAWIO_FONT_FAMILY") or None,
+        drawio_font_size=os.getenv("DRAWIO_FONT_SIZE") or None,
     )

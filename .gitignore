@@ -11,3 +11,5 @@ frdetr*/
 # 打包产物（PyInstaller 与 make_bundle.py 的输出）
 dist/
 build/
+# 自带字体目录：字体文件（如方正兰亭黑）有授权限制，不入库，自行放置
+Fonts/
