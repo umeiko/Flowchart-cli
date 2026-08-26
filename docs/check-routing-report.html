@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flowchart-cli 路由机制调研报告 · 检查审核管线的触发链路</title>
+<style>
+  :root {
+    --hw-red: #C7000B;
+    --hw-red-dark: #9E0009;
+    --hw-red-light: #E04A50;
+    --hw-bg: #FAF5EF;
+    --fill-proc: #FBE9EA;
+    --fill-judge: #FCE8E6;
+    --ink: #2B2B2B;
+    --muted: #6B6B6B;
+    --line: #999999;
+    --card: #FFFFFF;
+    --border: #E8DAD3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--hw-bg); color: var(--ink);
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    line-height: 1.75;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 36px 24px 90px; }
+
+  /* ===== 封面（PPT 首页） ===== */
+  .cover {
+    position: relative; border-radius: 4px; overflow: hidden;
+    background: linear-gradient(115deg, #8F0008 0%, var(--hw-red) 55%, var(--hw-red-light) 100%);
+    color: #fff; padding: 64px 56px 56px; margin-bottom: 36px;
+    box-shadow: 0 10px 30px rgba(199,0,11,.25);
+  }
+  .cover::after {
+    content: ""; position: absolute; right: -70px; top: -70px;
+    width: 260px; height: 260px; border-radius: 50%;
+    border: 42px solid rgba(255,255,255,.10);
+  }
+  .cover::before {
+    content: ""; position: absolute; right: 60px; bottom: -90px;
+    width: 190px; height: 190px; border-radius: 50%;
+    border: 30px solid rgba(255,255,255,.07);
+  }
+  .cover .kicker { font-size: 13px; letter-spacing: 4px; opacity: .85; text-transform: uppercase; }
+  .cover h1 { font-size: 34px; margin: 10px 0 6px; font-weight: 700; }
+  .cover .sub { font-size: 16px; opacity: .92; }
+  .cover .meta { margin-top: 26px; font-size: 13px; opacity: .8; }
+  .cover .rule { width: 64px; height: 5px; background: #fff; border-radius: 3px; margin-top: 18px; }
+
+  /* ===== PPT 页 ===== */
+  .slide {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 4px; margin-bottom: 30px; overflow: hidden;
+    box-shadow: 0 4px 16px rgba(120,60,50,.08);
+  }
+  .slide-head {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 28px; border-bottom: 3px solid var(--hw-red);
+    background: linear-gradient(90deg, #FFF 60%, var(--fill-proc));
+  }
+  .slide-num {
+    min-width: 40px; height: 40px; border-radius: 4px;
+    background: var(--hw-red); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 19px; font-weight: 700;
+  }
+  .slide-head h2 { margin: 0; font-size: 20px; color: var(--hw-red); font-weight: 700; }
+  .slide-head .en { margin-left: auto; font-size: 11px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; }
+  .slide-body { padding: 24px 30px 28px; }
+
+  h3 {
+    font-size: 16px; color: var(--hw-red); margin: 24px 0 10px;
+    padding-left: 12px; border-left: 4px solid var(--hw-red);
+  }
+  p { margin: 8px 0; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 5px 0; }
+
+  code {
+    font-family: "Cascadia Code", Consolas, monospace;
+    background: var(--fill-proc); color: var(--hw-red-dark);
+    border-radius: 3px; padding: 1px 6px; font-size: 13px;
+  }
+  pre {
+    background: #2B2B2B; color: #F2E9E4; border-radius: 4px;
+    border-left: 4px solid var(--hw-red);
+    padding: 16px 20px; overflow-x: auto; font-size: 13px; line-height: 1.6;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  pre .cm { color: #A89A92; } pre .kw { color: #FF8A80; } pre .st { color: #FFD180; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--hw-red); color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: var(--fill-proc); }
+
+  .ref { color: var(--muted); font-size: 13px; }
+
+  .badge {
+    display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 999px;
+    background: var(--hw-red); color: #fff; font-weight: 600; margin-right: 6px;
+  }
+  .badge.soft { background: var(--fill-proc); color: var(--hw-red); border: 1px solid var(--hw-red); }
+  .badge.gray { background: #EFEBE6; color: var(--muted); }
+
+  .callout {
+    border-left: 5px solid var(--hw-red); background: var(--fill-judge);
+    padding: 13px 18px; border-radius: 0 4px 4px 0; margin: 16px 0; font-size: 14.5px;
+  }
+  .callout b { color: var(--hw-red-dark); }
+
+  /* ================= HTML 流程图组件 ================= */
+  .fig {
+    background: #FFF; border: 1px dashed var(--line); border-radius: 4px;
+    padding: 26px 20px 14px; margin: 16px 0;
+  }
+  .fig .figcap { font-size: 13px; color: var(--muted); text-align: center; margin-top: 14px; }
+
+  .fc-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0; }
+  .fc-col { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+  .node {
+    border-radius: 6px; padding: 10px 18px; text-align: center;
+    font-size: 13.5px; line-height: 1.45; min-width: 150px;
+  }
+  .node .t { font-weight: 700; font-size: 14px; display: block; }
+  .node .s { font-size: 11.5px; opacity: .8; display: block; margin-top: 2px; }
+  .node.start, .node.end {
+    background: var(--hw-red); color: #fff; border: 2px solid #fff;
+    box-shadow: 0 0 0 2px var(--hw-red); border-radius: 999px;
+  }
+  .node.end .s { color: #FFD9DB; }
+  .node.start .s { color: #FFD9DB; }
+  .node.proc { background: var(--fill-proc); border: 2px solid var(--hw-red); color: var(--ink); }
+  .node.proc .s { color: var(--muted); }
+  .node.gray { background: #EFEBE6; border: 1.5px solid var(--line); color: var(--ink); }
+  .node.gray .s { color: var(--muted); }
+  .node.ghost { background: #fff; border: 1.5px dashed var(--line); color: var(--muted); }
+
+  /* 菱形判断节点 */
+  .judge-wrap { position: relative; width: 190px; height: 130px; display: flex; align-items: center; justify-content: center; flex: none; }
+  .judge {
+    position: absolute; width: 122px; height: 122px;
+    background: var(--fill-judge); border: 2px solid var(--hw-red);
+    transform: rotate(45deg); border-radius: 10px;
+  }
+  .judge-text { position: relative; z-index: 1; text-align: center; font-size: 12.5px; line-height: 1.35; font-weight: 600; }
+  .judge-text .s { font-weight: 400; font-size: 11px; color: var(--muted); display: block; }
+
+  /* 箭头 */
+  .arr-r, .arr-d { position: relative; flex: none; }
+  .arr-r { width: 64px; height: 2px; background: var(--line); }
+  .arr-r::after {
+    content: ""; position: absolute; right: -1px; top: -5px;
+    border-left: 11px solid var(--line);
+    border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+  }
+  .arr-r.red { background: var(--hw-red); height: 2.5px; }
+  .arr-r.red::after { border-left-color: var(--hw-red); }
+  .arr-d { width: 2px; height: 44px; background: var(--line); }
+  .arr-d::after {
+    content: ""; position: absolute; bottom: -1px; left: -5px;
+    border-top: 11px solid var(--line);
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+  }
+  .arr-d.red { background: var(--hw-red); width: 2.5px; }
+  .arr-d.red::after { border-top-color: var(--hw-red); }
+  .arr-label {
+    position: absolute; font-size: 11.5px; color: var(--muted); white-space: nowrap;
+    background: #fff; padding: 0 6px; font-weight: 600;
+  }
+  .arr-r .arr-label { top: -12px; left: 50%; transform: translate(-50%, -50%); }
+  .arr-r.red .arr-label, .arr-d.red .arr-label { color: var(--hw-red); }
+  .arr-d .arr-label { left: 10px; top: 50%; transform: translateY(-50%); }
+
+  /* 分支连线（树形） */
+  .branch {
+    display: flex; justify-content: center; gap: 90px; position: relative;
+    padding-top: 26px; margin-top: 8px;
+  }
+  .branch::before {
+    content: ""; position: absolute; top: 0; left: 25%; right: 25%; height: 2px; background: var(--line);
+  }
+  .branch::after {
+    content: ""; position: absolute; top: -20px; left: 50%; width: 2px; height: 20px; background: var(--line);
+  }
+  .branch-col { display: flex; flex-direction: column; align-items: center; position: relative; }
+  .branch-col::before {
+    content: ""; position: absolute; top: -26px; left: 50%; width: 2px; height: 26px; background: var(--line);
+  }
+  .branch-tag {
+    position: absolute; top: -30px; left: calc(50% + 8px);
+    font-size: 11.5px; color: var(--muted); white-space: nowrap; font-weight: 600;
+  }
+
+  /* 纵向时间线（调用链） */
+  .chain { display: flex; flex-direction: column; align-items: stretch; max-width: 640px; margin: 0 auto; }
+  .chain .node { align-self: center; min-width: 320px; }
+  .chain .arr-d { align-self: center; }
+
+  /* 分组虚线框 */
+  .group {
+    border: 1.5px dashed var(--hw-red); border-radius: 8px;
+    padding: 16px 18px 18px; margin-top: 10px; position: relative;
+  }
+  .group .group-label {
+    position: absolute; top: -12px; left: 16px; background: #fff;
+    padding: 0 10px; color: var(--hw-red); font-weight: 700; font-size: 13px;
+  }
+
+  /* 步骤序号圆点 */
+  .step {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--hw-red); color: #fff; font-size: 12.5px; font-weight: 700;
+    margin-right: 8px; flex: none;
+  }
+  .step-node { display: flex; align-items: center; gap: 0; width: 100%; }
+  .step-node .node { flex: 1; text-align: left; min-width: 0; }
+  .step-node .node .t { font-size: 13.5px; }
+
+  .toc { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; font-size: 15px; }
+  .toc a { color: var(--ink); text-decoration: none; display: flex; gap: 10px; padding: 6px 4px; border-bottom: 1px dashed var(--border); }
+  .toc a:hover { color: var(--hw-red); }
+  .toc .n { color: var(--hw-red); font-weight: 700; min-width: 22px; }
+
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 34px; }
+  footer .bar { width: 60px; height: 4px; background: var(--hw-red); margin: 0 auto 10px; border-radius: 2px; }
+
+  @media (max-width: 760px) {
+    .toc { grid-template-columns: 1fr; }
+    .fc-row { flex-direction: column; }
+    .arr-r { transform: rotate(90deg); margin: 22px 0; }
+    .arr-r .arr-label { transform: translate(-50%,-50%) rotate(-90deg); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ============ 封面 ============ -->
+<div class="cover">
+  <div class="kicker">Code Investigation Report</div>
+  <h1>路由机制与检查审核管线调研</h1>
+  <div class="sub">Flowchart-cli 如何触发「图像 / 图标检查审核机制」——从用户输入到 report.csv 的完整链路</div>
+  <div class="rule"></div>
+  <div class="meta">代码基线：flowchart_agent 包 &nbsp;·&nbsp; 调研日期：2026-08-20 &nbsp;·&nbsp; 所有行号以当前工作区为准</div>
+</div>
+
+<!-- ============ 目录 ============ -->
+<div class="slide">
+  <div class="slide-head"><div class="slide-num">§</div><h2>目录</h2><span class="en">Contents</span></div>
+  <div class="slide-body">
+    <div class="toc">
+      <a href="#s1"><span class="n">01</span>结论速览</a>
+      <a href="#s2"><span class="n">02</span>架构总览：两条"检视"路径</a>
+      <a href="#s3"><span class="n">03</span>一级路由：check 分支的触发条件</a>
+      <a href="#s4"><span class="n">04</span>完整调用链全景图</a>
+      <a href="#s5"><span class="n">05</span>check 模块内部管线（两级分类）</a>
+      <a href="#s6"><span class="n">06</span>检查项注册表与类型匹配</a>
+      <a href="#s7"><span class="n">07</span>Skill 机制与 check 的关系</a>
+      <a href="#s8"><span class="n">08</span>配置开关与成本特征</a>
+      <a href="#s9"><span class="n">09</span>关键发现与文档漂移</a>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 01 结论速览 ============ -->
+<div class="slide" id="s1">
+  <div class="slide-head"><div class="slide-num">1</div><h2>结论速览</h2><span class="en">Executive Summary</span></div>
+  <div class="slide-body">
+    <ul>
+      <li><b>触发位置</b>：检查审核是 <b>chat 模式专属的一级路由分支</b>。每条用户输入先经文本模型分类器（<code>router.py:21</code>）判定为 <code>generate / check / chat</code>，仅当明确判为 <code>check</code> 时才触发检查管线。</li>
+      <li><b>触发方式</b>：它<b>不是</b> LLM function calling 工具，也<b>不是</b> Skill——是 <code>MainAgent.chat()</code> 里硬编码在对话循环<b>之前</b>的分支（<code>main_agent.py:155-165</code>），触发后不进入对话历史。</li>
+      <li><b>内部机制</b>：check 内部采用<b>两级分类</b>——视觉模型"看图说话"生成图片结构化描述 → 文本模型据描述与用户意图二级分类，产出检查项清单和素材路径。</li>
+      <li><b>硬性门槛</b>：必须配置视觉模型（<code>VISION_MODEL_*</code> 三件套），否则 check 直接拒绝执行，<b>无降级路径</b>。</li>
+      <li><b>不触发的路径</b>：<code>run</code> 子命令（单次生成模式）不经过任何路由，永远不会触发 check。</li>
+    </ul>
+
+    <div class="fig">
+      <div class="fc-row">
+        <div class="node start"><span class="t">用户输入</span></div>
+        <div class="arr-r"></div>
+        <div class="node proc"><span class="t">一级路由分类器</span><span class="s">router.py · 文本模型 JSON 分类</span></div>
+        <div class="arr-r"></div>
+        <div class="judge-wrap">
+          <div class="judge"></div>
+          <div class="judge-text">category<span>== "check" ?</span></div>
+        </div>
+        <div class="arr-r red"><span class="arr-label">是</span></div>
+        <div class="node end"><span class="t">CheckAgent.handle()</span><span class="s">检查审核管线 check/</span></div>
+      </div>
+      <div class="fc-col" style="margin-top:10px;">
+        <div class="node ghost" style="min-width:340px;">否 / 无法分类（None）→ 回退主 Agent function calling 对话循环<span class="s">"宁可不错分" · router.py:3-4, 35-46</span></div>
+      </div>
+      <div class="figcap">图 1 · 检查审核机制的一级路由判定（红圆角：起止节点；浅红方框：处理节点；菱形：判断节点）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 02 架构总览 ============ -->
+<div class="slide" id="s2">
+  <div class="slide-head"><div class="slide-num">2</div><h2>架构总览：两条并行的"检视"路径</h2><span class="en">Architecture</span></div>
+  <div class="slide-body">
+    <p>仓库中存在两条容易混淆的"检查"路径，本报告关注的是第 ② 条：</p>
+    <table>
+      <tr><th style="width:30%">路径</th><th style="width:22%">入口</th><th style="width:26%">触发方式</th><th>作用对象</th></tr>
+      <tr>
+        <td><b>① 生成侧视觉验证</b><br><code>FlowchartAgent._verify()</code><br><span class="ref">agent.py:267-310</span></td>
+        <td>生成流程内部</td>
+        <td>每次生成后<b>自动</b>执行，PASS/FAIL 驱动修复循环</td>
+        <td>刚生成的流程图（自检）</td>
+      </tr>
+      <tr>
+        <td><b>② 检查侧管线（check 分支）</b><br><code>flowchart_agent/check/</code></td>
+        <td><code>MainAgent.chat()</code> 一级路由<br><span class="ref">main_agent.py:155-165</span></td>
+        <td>用户对<b>已有文档/图片</b>提"检查/审核/检视"请求，被一级分类器判为 <code>check</code></td>
+        <td>已有素材（文档+图片），产出 <code>output/check/v&lt;n&gt;/report.csv</code></td>
+      </tr>
+    </table>
+
+    <h3>入口分层：路由只存在于 chat 模式</h3>
+    <div class="fig">
+      <div class="fc-col">
+        <div class="node start"><span class="t">__main__.py → cli.main()</span></div>
+        <div class="arr-d"></div>
+        <div class="node proc"><span class="t">argparse 子命令分发</span><span class="s">cli.py:22-56</span></div>
+        <div class="branch">
+          <div class="branch-col">
+            <span class="branch-tag">run &lt;document&gt;</span>
+            <div class="node gray"><span class="t">FlowchartAgent.run()</span><span class="s">cli.py:91-138 · 单次生成</span></div>
+            <div class="arr-d"></div>
+            <div class="node ghost"><span class="t">不经过路由 · 不经 check</span><span class="s">仅生成侧 _verify 自检</span></div>
+          </div>
+          <div class="branch-col">
+            <span class="branch-tag">chat</span>
+            <div class="node proc"><span class="t">MainAgent.chat()</span><span class="s">chat_cli.py:179 → main_agent.py:142</span></div>
+            <div class="arr-d red"></div>
+            <div class="node end"><span class="t">一级路由 route_category()</span><span class="s">路由 / check 唯一触发点</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="figcap">图 2 · 入口分层：<code>run</code> 直达生成器，只有 <code>chat</code> 经过 MainAgent 的路由</div>
+    </div>
+    <p class="ref">装配细节：chat REPL 在 <code>chat_cli.py:117-131</code> 创建 <code>DiagramSession</code>（产物目录 <code>output/generate/</code>）与 <code>MainAgent</code>（output_root=output_dir），逐行读输入调用 <code>agent.chat(resolved_input, images=...)</code>。</p>
+  </div>
+</div>
+
+<!-- ============ 03 一级路由 ============ -->
+<div class="slide" id="s3">
+  <div class="slide-head"><div class="slide-num">3</div><h2>一级路由：check 分支的触发条件</h2><span class="en">Level-1 Router</span></div>
+  <div class="slide-body">
+    <p><span class="badge">核心文件</span><code>flowchart_agent/router.py</code>（全文 49 行，单一函数 <code>route_category()</code>，router.py:21）</p>
+    <p>用<b>文本模型</b>做一次廉价的 JSON 分类（router.py:24-34），分类 prompt 在 <code>prompts/route.py:3-13</code>：</p>
+    <pre><code><span class="cm">- generate：用户想生成、绘制、修改流程图/图表，或调整已有图的风格样式</span>
+<span class="cm">- check：用户想检查、审核、检视已有的文档或图片——关注正确性、图与文字描述的</span>
+<span class="cm">  一致性、敏感信息泄露等（如"检查这份文档"、"这张截图有没有问题"、</span>
+<span class="cm">  "原理图和描述一致吗"、"帮我看看组网图对不对"）</span>
+<span class="cm">- chat：以上都不是</span></code></pre>
+
+    <div class="callout"><b>容错策略"宁可不错分"</b>：JSON 解析失败或类别不在 <code>("generate","check","chat")</code> 时返回 <code>None</code>（router.py:35-46），调用方回退主 Agent 流程（router.py:3-4 注释）。分类结果<b>只在 <code>== "check"</code> 时被消费</b>，其余类别仅写日志（router.py:47）。</div>
+
+    <h3>唯一调用点：main_agent.py:155-165（MainAgent.chat() 开头）</h3>
+    <pre><code><span class="cm"># 一级路由：check 类输入转交检查管线，不进入对话上下文</span>
+category = route_category(self._llm, user_input, has_images=bool(images))
+<span class="kw">if</span> category == <span class="st">"check"</span>:
+    <span class="kw">if</span> self._check_agent <span class="kw">is None</span> <span class="kw">and</span> self._output_root <span class="kw">is not None</span>:
+        self._check_agent = CheckAgent(self._settings, self._output_root)
+    <span class="kw">if</span> self._check_agent <span class="kw">is not None</span>:
+        <span class="kw">if</span> self._on_progress:
+            self._on_progress(<span class="st">"已路由到文档检查，正在分析素材…"</span>)
+        <span class="kw">return</span> self._check_agent.handle(
+            user_input, images <span class="kw">or</span> [], on_progress=self._on_progress
+        )
+    logger.warning(<span class="st">"[route] 无 output_root，check 分支回退主 Agent 流程"</span>)</code></pre>
+
+    <h3>触发条件（须同时满足）</h3>
+    <div class="fig">
+      <div class="fc-row">
+        <div class="node proc"><span class="t">① 处于 chat 模式</span><span class="s">run 子命令不经 MainAgent</span></div>
+        <div class="arr-r"><span class="arr-label">+</span></div>
+        <div class="node proc"><span class="t">② 分类器明确返回 "check"</span><span class="s">解析失败 → None → 回退</span></div>
+        <div class="arr-r"><span class="arr-label">+</span></div>
+        <div class="node proc"><span class="t">③ output_root 非空</span><span class="s">CheckAgent 懒加载</span></div>
+        <div class="arr-r red"><span class="arr-label">=</span></div>
+        <div class="node end"><span class="t">进入 check 管线</span></div>
+      </div>
+      <div class="figcap">图 3 · check 分支的三个必要条件</div>
+    </div>
+    <p class="ref">注：check 类输入<b>不进入对话历史</b>——<code>return</code> 发生在 <code>self._messages.append</code> 之前（main_agent.py:154 注释、167）。<code>generate / chat / None</code> 都落到同一个 function calling 循环（main_agent.py:172-210）。</p>
+  </div>
+</div>
+
+<!-- ============ 04 调用链全景 ============ -->
+<div class="slide" id="s4">
+  <div class="slide-head"><div class="slide-num">4</div><h2>完整调用链全景图</h2><span class="en">Call Chain</span></div>
+  <div class="slide-body">
+    <div class="fig">
+      <div class="chain">
+        <div class="node start"><span class="t">用户输入（chat REPL）</span><span class="s">chat_cli.py:138</span></div>
+        <div class="arr-d"></div>
+        <div class="node proc"><span class="t">MainAgent.chat()</span><span class="s">main_agent.py:142</span></div>
+        <div class="arr-d"></div>
+        <div class="node proc"><span class="t">一级路由 route_category()</span><span class="s">router.py:21 · 文本模型</span></div>
+        <div class="arr-d red"><span class="arr-label">category == "check"</span></div>
+        <div class="node end"><span class="t">CheckAgent.handle()</span><span class="s">check/agent.py:42 · 管线唯一入口</span></div>
+      </div>
+
+      <div class="group">
+        <span class="group-label">check/agent.py · handle() 内部管线</span>
+        <div class="chain" style="max-width:100%;">
+          <div class="step-node"><span class="step">0</span><div class="node proc" style="background:var(--fill-judge);"><span class="t">前置门槛：视觉模型存在？</span><span class="s">check/agent.py:61-65 · 无 VISION_MODEL_* → 直接拒绝，无降级</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">1</span><div class="node proc"><span class="t">describe_images() · 视觉模型逐图生成结构化描述</span><span class="s">check/classifier.py:39 · prompts/check/describe.py</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">2</span><div class="node proc"><span class="t">classify() · 二级路由：文本模型输出 JSON</span><span class="s">classifier.py:52 · items / doc_paths / image_paths / reason</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">3</span><div class="node proc"><span class="t">收集素材 _load_documents() + _load_images()</span><span class="s">check/agent.py:79-94 · 新图片补 describe · 无图片 → 返回提示</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">4</span><div class="node proc"><span class="t">resolve_items() · 解析检查项清单</span><span class="s">items.py:94-99 · "all" / 未知 id → 兜底全部 9 项</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">5</span><div class="node proc"><span class="t">ItemCheckAgent.run() · 逐项派发（视觉模型）</span><span class="s">item_agent.py:52-85 · 适用性过滤 → chat_with_image → 三值判定</span></div></div>
+          <div class="arr-d"></div>
+          <div class="step-node"><span class="step">6</span><div class="node end" style="border-radius:6px;"><span class="t">落盘 + 摘要：output/check/v&lt;n&gt;/report.csv</span><span class="s">classify_raw.txt · describe_*.txt · check_*_raw.txt · source/ · run.log</span></div></div>
+        </div>
+      </div>
+      <div class="figcap">图 4 · 从用户输入到 report.csv 的完整调用链（虚线框内为 check 管线六步）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 05 两级分类 ============ -->
+<div class="slide" id="s5">
+  <div class="slide-head"><div class="slide-num">5</div><h2>check 模块内部管线：两级分类</h2><span class="en">Two-Level Classification</span></div>
+  <div class="slide-body">
+    <h3>模块结构（flowchart_agent/check/）</h3>
+    <table>
+      <tr><th style="width:32%">文件</th><th>职责</th></tr>
+      <tr><td><code>check/__init__.py:1-17</code></td><td>导出 <code>CheckAgent / ItemCheckAgent / CHECK_ITEMS / resolve_items</code>；docstring 自述"两级分类路由的 check 分支（文档/图片检视）"</td></tr>
+      <tr><td><code>check/agent.py:42-153</code></td><td><code>CheckAgent</code> 编排器，<code>handle()</code> 是检查管线唯一入口</td></tr>
+      <tr><td><code>check/classifier.py</code></td><td>二级分类（看图说话 → 文本分类）</td></tr>
+      <tr><td><code>check/items.py</code></td><td>检查项注册表（9 项）</td></tr>
+      <tr><td><code>check/item_agent.py</code></td><td>单项检查子 Agent</td></tr>
+    </table>
+
+    <h3>"看图说话 → 文本分类"两步走</h3>
+    <div class="fig">
+      <div class="fc-row">
+        <div class="node start"><span class="t">用户图片</span><span class="s">images[]</span></div>
+        <div class="arr-r"></div>
+        <div class="node proc" style="min-width:210px;">
+          <span class="t" style="color:var(--hw-red);">第一级：看图说话</span>
+          <span class="s">describe_images() · 视觉模型 · classifier.py:39-50</span>
+          <span class="s">首行判断图类型：原理图 / 流程图 / 拓扑 / 截图</span>
+        </div>
+        <div class="arr-r"></div>
+        <div class="node proc" style="min-width:210px;">
+          <span class="t" style="color:var(--hw-red);">第二级：文本分类</span>
+          <span class="s">classify() · 文本模型 · classifier.py:52-101</span>
+          <span class="s">检查项清单此刻才注入（渐进式披露）</span>
+        </div>
+        <div class="arr-r red"></div>
+        <div class="node end" style="border-radius:6px;">
+          <span class="t">JSON 输出</span>
+          <span class="s">items · doc_paths · image_paths · reason</span>
+        </div>
+      </div>
+      <div class="fc-col" style="margin-top:12px;">
+        <div class="node gray" style="min-width:420px;">分类规则：用户明确指定检查项 → 只返回对应 id；未指定 → 原样返回 "all"；无法解析 → None → 回复"没能确定要执行哪些检查"</div>
+      </div>
+      <div class="figcap">图 5 · 二级分类：视觉模型先描述图片，文本模型再决定查什么、查哪些素材（用户原始意图同时输入第二级）</div>
+    </div>
+
+    <div class="callout"><b>视觉模型硬门槛</b>（check/agent.py:61-65）：<code>self._vision_llm is None</code> 时直接返回"检查功能需要视觉模型支持…请在 .env 中配置后再试"。与生成侧 <code>_verify</code> 可降级为 code 模式（agent.py:277-280）不同，check <b>没有降级路径</b>。</div>
+  </div>
+</div>
+
+<!-- ============ 06 检查项注册表 ============ -->
+<div class="slide" id="s6">
+  <div class="slide-head"><div class="slide-num">6</div><h2>检查项注册表与图片类型匹配</h2><span class="en">Check Items</span></div>
+  <div class="slide-body">
+    <p><code>CheckItem</code> 为 dataclass（<code>id, name, applies_to, prompt</code>，items.py:16-21），共注册 9 项（items.py:24-81）。每项 prompt 在 <code>prompts/check/items/&lt;id&gt;.py</code>，统一拼接 <code>ITEM_OUTPUT_FORMAT</code>（base.py:3-8），规定首行输出 <code>PASS / FAIL / NA</code>。</p>
+    <table>
+      <tr><th style="width:26%">id</th><th style="width:34%">名称</th><th>applies_to（适用图片类型关键词）</th></tr>
+      <tr><td><code>schematic_consistency</code></td><td>原理图与原理描述一致性</td><td><span class="badge soft">原理图</span></td></tr>
+      <tr><td><code>flowchart_correctness</code></td><td>流程图正确性</td><td><span class="badge soft">流程图</span></td></tr>
+      <tr><td><code>flowchart_steps</code></td><td>流程图与操作步骤一致性</td><td><span class="badge soft">流程图</span></td></tr>
+      <tr><td><code>network_correctness</code></td><td>组网图正确性</td><td><span class="badge soft">组网</span><span class="badge soft">拓扑</span></td></tr>
+      <tr><td><code>network_consistency</code></td><td>组网图与组网描述一致性</td><td><span class="badge soft">组网</span><span class="badge soft">拓扑</span></td></tr>
+      <tr><td><code>ui_correctness</code></td><td>界面截图正确性</td><td><span class="badge soft">界面截图</span><span class="badge soft">界面</span></td></tr>
+      <tr><td><code>ui_terminology</code></td><td>界面词与实际界面一致性</td><td><span class="badge soft">界面截图</span><span class="badge soft">界面</span></td></tr>
+      <tr><td><code>ui_sensitive</code></td><td>界面截图敏感信息检查</td><td><span class="badge">空集 = 任何图片</span><span class="ref">items.py:70</span></td></tr>
+      <tr><td><code>ui_steps</code></td><td>界面截图与操作步骤一致性</td><td><span class="badge soft">界面截图</span><span class="badge soft">界面</span></td></tr>
+    </table>
+
+    <h3>单项检查的判定逻辑（item_agent.py:52-85）</h3>
+    <div class="fig">
+      <div class="fc-row">
+        <div class="node start"><span class="t">ItemCheckAgent.run()</span><span class="s">item, images, kinds, document</span></div>
+        <div class="arr-r"></div>
+        <div class="judge-wrap">
+          <div class="judge"></div>
+          <div class="judge-text">图片类型命中<span>applies_to ?</span></div>
+        </div>
+        <div class="arr-r red"><span class="arr-label">是</span></div>
+        <div class="node proc"><span class="t">vision_llm.chat_with_image()</span><span class="s">item_agent.py:78 · 逐图调用</span></div>
+        <div class="arr-r"></div>
+        <div class="node end" style="border-radius:6px;">
+          <span class="t">三值判定 _verdict_of()</span>
+          <span class="s">首行 PASS → 通过 ｜ NA → 不符合分类 ｜ 其余 → 不通过</span>
+        </div>
+      </div>
+      <div class="fc-col" style="margin-top:10px;">
+        <div class="node ghost" style="min-width:380px;">否（类型未命中）→ 不调模型，直接判"不符合该分类"<span class="s">item_agent.py:65-74 · 关键词：原理图/流程图/组网/拓扑/界面截图/界面（check/agent.py:30-39）</span></div>
+      </div>
+      <div class="figcap">图 6 · 适用性过滤 → 视觉模型逐图检查 → 首行三值判定（item_agent.py:32-38）</div>
+    </div>
+
+    <p class="ref">产物：<code>report.csv</code>（UTF-8-BOM，Excel 兼容；列：检查项 / 检查项ID / 图片 / 结果 / 问题说明，check/agent.py:222-235），素材复制到 <code>source/</code>，回复摘要列出所有不通过项；产物目录版本化 <code>output/check/v&lt;n&gt;/</code>（_next_run_dir，agent.py:192-198）。<b>新增检查项 = 加一个 prompt 文件 + 注册一行</b>（items.py:6）。</p>
+  </div>
+</div>
+
+<!-- ============ 07 Skill 关系 ============ -->
+<div class="slide" id="s7">
+  <div class="slide-head"><div class="slide-num">7</div><h2>Skill 机制与 check 的关系</h2><span class="en">Skills vs Check</span></div>
+  <div class="slide-body">
+    <div class="callout"><b>check 管线不是 Skill，也不由 LLM function calling 触发</b>——它是 <code>MainAgent.chat()</code> 里 function calling 循环<b>之前</b>的硬编码分支。主 Agent 的系统 prompt（main_agent.py:32-72）不含任何 check 指令，LLM 主循环根本不知道 check 的存在。</div>
+
+    <div class="fig">
+      <div class="fc-row">
+        <div class="node start"><span class="t">MainAgent.chat()</span></div>
+        <div class="arr-r"></div>
+        <div class="node proc"><span class="t">一级路由（硬编码分支）</span><span class="s">先于一切工具调用</span></div>
+        <div class="arr-r red"><span class="arr-label">=="check"</span></div>
+        <div class="node end" style="border-radius:6px;"><span class="t">CheckAgent（独立管线）</span><span class="s">非 Skill · 非 tool · 不入对话历史</span></div>
+      </div>
+      <div class="fc-row" style="margin-top:18px;">
+        <div class="node ghost" style="min-width:170px;">generate / chat / None</div>
+        <div class="arr-r"></div>
+        <div class="node proc"><span class="t">function calling 对话循环</span><span class="s">18 个内置 Skill 工具 · MAX_TOOL_ITERATIONS=8</span></div>
+        <div class="arr-r"></div>
+        <div class="node proc"><span class="t">_execute() 分发表</span><span class="s">main_agent.py:231-243</span></div>
+      </div>
+      <div class="figcap">图 7 · check 分支与 Skill / function calling 的位置关系：分流发生在工具循环之前</div>
+    </div>
+
+    <ul>
+      <li><b>内置 Skill</b>（<code>flowchart_agent/skills/</code>）：<code>Skill</code> 是最小 dataclass（base.py:10-31），<code>build_skills()</code>（builtin.py:169-545）注册 18 个基础工具 + 条件注册 <code>run_command</code>、<code>ocr_image</code>。<b>其中没有任何 check/review 类工具</b>。</li>
+      <li><b>技能包 SkillPacks</b>（顶层 <code>skills/*.md</code> + <code>skillpacks.py</code>）：提示词型插件，现有唯一插件 <code>drawio-export.md</code>，与 check 无关。</li>
+      <li><b>生成侧的间接联系</b>：<code>create_diagram</code> / <code>modify_diagram</code> 内部走 <code>FlowchartAgent._verify</code>（生成→渲染校验→视觉验证循环，builtin.py:296-301、399-401），属生成路径，并非 check 管线。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============ 08 配置 ============ -->
+<div class="slide" id="s8">
+  <div class="slide-head"><div class="slide-num">8</div><h2>配置开关与成本特征</h2><span class="en">Configuration</span></div>
+  <div class="slide-body">
+    <table>
+      <tr><th style="width:30%">变量</th><th style="width:52%">作用</th><th>位置</th></tr>
+      <tr>
+        <td><code>VISION_MODEL_NAME / API_KEY / BASE_URL</code></td>
+        <td>三项齐全才加载视觉模型（config.py:57-64）；<b>不配置 → check 直接不可用</b>，生成侧验证降级为 code 模式</td>
+        <td>.env.example:11-15</td>
+      </tr>
+      <tr>
+        <td><code>VERIFY_MODE</code></td>
+        <td>生成侧视觉检视强度 full / layout / code（config.py:88），<b>不影响 check 管线</b></td>
+        <td>.env.example:33</td>
+      </tr>
+      <tr>
+        <td><code>TEXT_MODEL_VISION</code></td>
+        <td>主模型是否原生多模态；影响图片芯片与 read_image 工具下发（main_agent.py:133-134），不影响 check</td>
+        <td>.env.example:9</td>
+      </tr>
+      <tr>
+        <td><code>TEXT_MODEL_NAME / API_KEY / BASE_URL</code></td>
+        <td>一级 / 二级分类及主 Agent 所用文本模型</td>
+        <td>config.py:78-82</td>
+      </tr>
+      <tr>
+        <td><code>FLOWCHART_SKILL_DIR</code></td>
+        <td>技能包目录覆盖（skillpacks.py:28），与 check 无关</td>
+        <td>.env.example:43</td>
+      </tr>
+    </table>
+    <div class="callout"><b>没有任何开关能"关闭"check 路由</b>——它是每条 chat 输入的必经路径，意味着每次用户输入都固定多花一次文本模型分类调用。check 内部 4 处 LLM 调用也<b>都不用 function calling</b>，全是普通对话 + 正则抓 JSON / 首行判定：一级分类（router.py:24-34，文本）· 图片描述（classifier.py:44，视觉）· 二级分类（classifier.py:62-77，文本）· 逐项检查（item_agent.py:78，视觉）。</div>
+  </div>
+</div>
+
+<!-- ============ 09 关键发现 ============ -->
+<div class="slide" id="s9">
+  <div class="slide-head"><div class="slide-num">9</div><h2>关键发现与文档漂移</h2><span class="en">Findings</span></div>
+  <div class="slide-body">
+    <ul>
+      <li><span class="badge">设计佐证</span><code>docs/REQUIREMENTS.md:92-118</code> 明确记载两级路由设计：一级分类（router.py）→ check 管线；"宁可不错分"回退策略（:96）；"看图说话 → 文本分类"技术路线与 CSV 报告（:99-117）。</li>
+      <li><span class="badge gray">文档漂移</span><code>docs/REQUIREMENTS.md:67</code> 提到的 <code>check/types.py</code> 已改名为 <code>items.py</code>；<code>README.md:101</code> 仍写报告为 <code>report.md</code>，实际产物已是 <code>report.csv</code>。</li>
+      <li><span class="badge soft">用户入口提示</span>chat 帮助文本向用户披露了 check 入口示例：<code>chat_cli.py:78-79</code>（"检查 test_datas/check/... 里的流程图和操作步骤是否一致……产物在 output/check/"）。</li>
+      <li><span class="badge soft">可扩展点</span>新增检查项成本极低：加一个 <code>prompts/check/items/&lt;id&gt;.py</code> + 在 <code>items.py</code> 注册一行即可，无需改动路由与编排代码。</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  <div class="bar"></div>
+  Flowchart-cli · flowchart_agent 包逐行调研 · 报告配色取自仓库 styles/huawei-red-v2.md（#C7000B / #FAF5EF / #FBE9EA / #FCE8E6）
+</footer>
+
+</div>
+</body>
+</html>
