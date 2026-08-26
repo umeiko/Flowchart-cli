@@ -15,8 +15,17 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
   （同向共边的锚点短桩允许总线共享，反向不共享）；判断节点（rhombus）
   的多条出边按 [朝目标侧→底边→另一侧] 动态尝试且不共享车道——
   是/否必然异侧出行；汇合点（入度≥2）的下行入边优先底出连成总线。
+  非判断节点的四条边支持双车道：反向箭头（一进一出）抢中点时，
+  已布在中点的箭头迁到该边的 1/3 三等分点，新箭头走 2/3（侧边上
+  远端在上的走 1/3，顶/底边上远端在左的走 1/3），避免两条反向
+  短桩叠在同一条边上。
 
 环（回退边）不参与分层：拓扑排序残留的节点按已分层前驱的最大层 +1 落位。
+
+调试：排查走线问题不要直接改本文件试错——先用 scripts/route_report.py
+手动触发一次完整路由并生成逐边报告（复用 _prepare(router_cls=...) 注入
+插桩路由器，输出每条边各模板尝试的成败与失败原因）：
+    uv run python scripts/route_report.py <file.drawio> [--render]
 """
 
 from __future__ import annotations
@@ -54,6 +63,11 @@ class _Router:
     - 不与已提交线段共线重叠（垂直交叉是正常走线，允许；同向共边在
       节点邻域内的重叠视为总线共享——但判断节点（decisions）不豁免，
       是/否分支必须从不同的边出去，走向才明确）。
+
+    双车道迁移：非判断节点的同一条边（左/右/顶/底），优先单车道
+    （附着中点 0.5）；仅当中点被一条反向短桩（一进一出）挡住时，
+    把对方迁到 1/3 三等分点、本边走 2/3。菱形周界求交只认顶点，
+    不参与迁移。
     """
 
     def __init__(self, pos: dict[str, tuple[float, float]],
@@ -73,7 +87,13 @@ class _Router:
         for off in (0, _LANE, 2 * _LANE):
             self.cands.append(self.xlo - _MARGIN - off)
             self.cands.append(self.xhi + _MARGIN + off)
-        self.committed: list[tuple[float, float, float, float, str, str]] = []
+        # 已提交线段：(x1, y1, x2, y2, source, target, edge_id)
+        self.committed: list[tuple[float, float, float, float, str, str, str]] = []
+        # 每条边的路由记录：双车道迁移时要回改它的附着点/拐点并重写 XML
+        self.routes: dict[str, dict] = {}
+        # 各边附着登记：(node, 'L'/'R'/'T'/'B') -> [(edge_id, 'exit'/'entry', 沿边比例)]
+        self.side_use: dict[tuple[str, str], list[tuple[str, str, float]]] = {}
+        self.migrations: list[str] = []  # 双车道迁移记录（供走线报告输出）
 
     # ---- 几何判定 ----
 
@@ -106,10 +126,12 @@ class _Router:
         r = self.rects[i]
         return (r[1] - GAP_Y, r[3] + GAP_Y)
 
-    def _free_lane(self, seg: tuple, s: str, t: str) -> bool:
-        """线段不与已提交线段共线重叠（允许垂直交叉与锚点短桩共享）。"""
+    def _lane_conflicts(self, seg: tuple, s: str, t: str) -> list[tuple]:
+        """与 seg 共线重叠且不被豁免的已提交线段（垂直交叉是正常走线，不算）。"""
         x1, y1, x2, y2 = seg
-        for a, b, c, d, cs, ct in self.committed:
+        out = []
+        for rec in self.committed:
+            a, b, c, d, cs, ct = rec[:6]
             if x1 == x2 and a == c and abs(x1 - a) < _MERGE:
                 lo = max(min(y1, y2), min(b, d))
                 hi = min(max(y1, y2), max(b, d))
@@ -119,7 +141,7 @@ class _Router:
                 if (shared is not None and shared not in self.decisions
                         and _inside(self._vicinity(shared), lo, hi)):
                     continue
-                return False
+                out.append(rec)
             elif y1 == y2 and b == d and abs(y1 - b) < _MERGE:
                 lo = max(min(x1, x2), min(a, c))
                 hi = min(max(x1, x2), max(a, c))
@@ -130,8 +152,223 @@ class _Router:
                     z = self._vicinity(shared)
                     if z[0] <= y1 <= z[1]:
                         continue
-                return False
+                out.append(rec)
+        return out
+
+    def _free_lane(self, seg: tuple, s: str, t: str) -> bool:
+        """线段不与已提交线段共线重叠（允许垂直交叉与锚点短桩共享）。"""
+        return not self._lane_conflicts(seg, s, t)
+
+    @staticmethod
+    def _side_of(p: tuple) -> str | None:
+        """附着点所在的节点边：'L'/'R'/'T'/'B'；角点以外的组合不会出现。"""
+        if p[0] in (0, 1):
+            return "R" if p[0] == 1 else "L"
+        if p[1] in (0, 1):
+            return "B" if p[1] == 1 else "T"
+        return None
+
+    @staticmethod
+    def _frac_of(p: tuple, side: str) -> float:
+        """附着点在该边上的归一化位置（侧边取纵向比例，顶/底边取横向）。"""
+        return p[1] if side in ("L", "R") else p[0]
+
+    def _attach_ok(self, s: str, t: str, exit_p: tuple, entry_p: tuple) -> bool:
+        """新附着点与同边反向箭头保持车道间距。
+
+        同一条边（左/右/顶/底）上方向相反（一进一出）的两个箭头，沿边
+        间距必须 ≥ _LANE；同向箭头不受限（总线共享刻意叠在同一点）。
+        这条规则同时挡住"中点塞进两条三等分车道之间"（侧边上 0.5 距
+        1/3 仅 11.7px）的第三辆车。
+        """
+        for node, p, end in ((s, exit_p, "exit"), (t, entry_p, "entry")):
+            side = self._side_of(p)
+            if side is None:
+                continue
+            f, span = (p[1], H) if side in ("L", "R") else (p[0], W)
+            for _eid, end2, f2 in self.side_use.get((node, side), []):
+                if end2 != end and abs(f2 - f) * span < _LANE - 1e-6:
+                    return False
         return True
+
+    # ---- 双车道迁移：非判断节点某条边上反向箭头（一进一出）抢中点时的退让 ----
+
+    def _migration_plan(self, pts: list[tuple], s: str, t: str,
+                        exit_p: tuple, entry_p: tuple) -> tuple | None:
+        """路径仅被一条可迁移的反向短桩挡住时返回迁移方案，否则 None。
+
+        可迁移 = 唯一障碍是本边首段（出 source）或末段（进 target）上的
+        一处车道冲突，且冲突段是对方在同节点同一边的短桩：对方在该边
+        有且仅有这一条附着、停在中点 0.5、方向与本边相反、节点非菱形。
+        返回 (对方 edge_id, 节点, 边, 本边端别, 对方端别, 对方新比例, 本边新比例)
+        ——两个箭头各退到该边的 1/3 与 2/3 三等分点：侧边上远端在上的
+        走 1/3，顶/底边上远端在左的走 1/3，减少两条短桩交叉。
+        """
+        segs = _segs_of(pts, t)
+        if not all(self._clear(seg, ex) for seg, ex in segs):
+            return None
+        confs = [(i, rec) for i, (seg, _ex) in enumerate(segs)
+                 for rec in self._lane_conflicts(seg, s, t)]
+        if len(confs) != 1:
+            return None
+        i, rec = confs[0]
+        seg = segs[i][0]
+        # 首段对应出 source、末段对应进 target；直连路径首末同段，两端都试
+        ends = []
+        if i == 0:
+            ends.append((s, "exit", exit_p))
+        if i == len(segs) - 1:
+            ends.append((t, "entry", entry_p))
+        for n, end, p in ends:
+            plan = self._plan_at(rec, seg, n, self._side_of(p), end, s, t)
+            if plan is not None:
+                return plan
+        return None  # 中段冲突不是附着点问题，迁移解决不了
+
+    def _plan_at(self, rec: tuple, seg: tuple, n: str, side: str | None,
+                 end: str, s: str, t: str) -> tuple | None:
+        """_migration_plan 的单端版本：冲突能否归因到 (n, side) 上的中点反向短桩。"""
+        if n in self.decisions or side is None:
+            return None
+        if side in ("L", "R"):
+            if seg[1] != seg[3]:  # 侧边短桩应是水平段
+                return None
+        elif seg[0] != seg[2]:  # 顶/底边短桩应是竖直段
+            return None
+        use = self.side_use.get((n, side), [])
+        ceid = rec[6]
+        if len(use) != 1 or use[0][0] != ceid:
+            return None  # 该边已有两条及以上附着：最多双车道，不再加塞
+        _id, cend, cf = use[0]
+        if cend == end or cf != 0.5:
+            return None  # 同向共边归总线豁免管；对方不在中点无从迁移
+        crec = self.routes.get(ceid)
+        if crec is None:
+            return None
+        cpts = crec["pts"]
+        stub = (cpts[0], cpts[1]) if cend == "exit" else (cpts[-2], cpts[-1])
+        if tuple(rec[:4]) != (stub[0][0], stub[0][1], stub[1][0], stub[1][1]):
+            return None  # 冲突的是对方路径中段，迁它的附着点解决不了
+        # 远端在上（侧边比 y）/在左（顶底边比 x）的箭头走 1/3；平局入边占 1/3
+        our_far = self.rects[t if end == "exit" else s]
+        their_far = self.rects[crec["t"] if cend == "exit" else crec["s"]]
+        if side in ("L", "R"):
+            our_k = (our_far[1] + our_far[3]) / 2
+            their_k = (their_far[1] + their_far[3]) / 2
+        else:
+            our_k = (our_far[0] + our_far[2]) / 2
+            their_k = (their_far[0] + their_far[2]) / 2
+        if our_k != their_k:
+            f_our, f_their = (1 / 3, 2 / 3) if our_k < their_k else (2 / 3, 1 / 3)
+        else:
+            f_our, f_their = (1 / 3, 2 / 3) if end == "entry" else (2 / 3, 1 / 3)
+        return (ceid, n, side, end, cend, f_their, f_our)
+
+    def _apply_migration(self, plan: tuple, pts: list[tuple], s: str, t: str,
+                         exit_p: tuple, entry_p: tuple):
+        """执行双车道迁移，成功返回本边的 (拐点, exit, entry)，失败回滚返回 None。
+
+        双方短桩分别平移到两个三等分点后整路径重验（对方换车道后可能与
+        更晚提交的线段相碰，必须重跑穿节点 + 车道检查，不过则完整回滚）。
+        """
+        ceid, n, side, end, cend, f_their, f_our = plan
+        crec = self.routes[ceid]
+        rect = self.rects[n]
+        horiz = side in ("L", "R")
+        # 短桩贴边坐标：侧边为 x，顶/底边为 y
+        anchor = (rect[2] if side == "R" else rect[0]) if horiz \
+            else (rect[3] if side == "B" else rect[1])
+
+        def _shift(old_pts: list[tuple], old_p: tuple, which: str, f: float):
+            """把 old_pts 的 which 端（exit=首段 / entry=末段）短桩平移到比例 f。
+
+            相邻段与短桩垂直时拐角直接并入相邻段（少一次折返）；共线时
+            （直连/折叠路径）保留原拐点、补一个短折角，保证全程轴对齐。
+            """
+            if len(old_pts) < 2:
+                return None
+            off = (rect[1] + f * H) if horiz else (rect[0] + f * W)
+            new_p = (old_p[0], f) if horiz else (f, old_p[1])
+            if which == "exit":
+                first, nxt = old_pts[0], old_pts[1]
+                if horiz:
+                    if nxt[1] != first[1] or first[0] != anchor:
+                        return None
+                    new_first, corner = (anchor, off), (nxt[0], off)
+                    collinear = len(old_pts) > 2 and old_pts[2][1] == nxt[1]
+                else:
+                    if nxt[0] != first[0] or first[1] != anchor:
+                        return None
+                    new_first, corner = (off, anchor), (off, nxt[1])
+                    collinear = len(old_pts) > 2 and old_pts[2][0] == nxt[0]
+                new = [new_first, corner, *([nxt] if collinear else []),
+                       *old_pts[2:]]
+            else:
+                prev, last = old_pts[-2], old_pts[-1]
+                if horiz:
+                    if prev[1] != last[1] or last[0] != anchor:
+                        return None
+                    corner, new_last = (prev[0], off), (anchor, off)
+                    collinear = len(old_pts) > 2 and old_pts[-3][1] == prev[1]
+                else:
+                    if prev[0] != last[0] or last[1] != anchor:
+                        return None
+                    corner, new_last = (off, prev[1]), (off, anchor)
+                    collinear = len(old_pts) > 2 and old_pts[-3][0] == prev[0]
+                new = [*(old_pts[:-1] if collinear else old_pts[:-2]),
+                       corner, new_last]
+            new = [p for i, p in enumerate(new) if i == 0 or p != new[i - 1]]
+            return new, new_p
+
+        ours = _shift(pts, exit_p if end == "exit" else entry_p, end, f_our)
+        theirs = _shift(crec["pts"],
+                        crec["exit_p"] if cend == "exit" else crec["entry_p"],
+                        cend, f_their)
+        if ours is None or theirs is None:
+            return None
+        our_pts, our_p = ours
+        their_pts, their_p = theirs
+
+        # 试迁移：先摘掉对方旧线段并重验对方新路径，再把对方在侧边登记
+        # 挪到新比例（否则本边验证间距时看到的还是旧中点），最后验本边
+        old_segs = [r for r in self.committed if r[6] == ceid]
+        self.committed = [r for r in self.committed if r[6] != ceid]
+        cs, ct = crec["s"], crec["t"]
+        ok = all(self._clear(seg, ex) and self._free_lane(seg, cs, ct)
+                 for seg, ex in _segs_of(their_pts, ct))
+        our_exit, our_entry = exit_p, entry_p
+        if ok:
+            for p, q in zip(their_pts, their_pts[1:]):
+                if p != q:
+                    self.committed.append((p[0], p[1], q[0], q[1], cs, ct, ceid))
+            self.side_use[(n, side)][:] = [(ceid, cend, f_their)]
+            if end == "exit":
+                our_exit = our_p
+            else:
+                our_entry = our_p
+            ok = self._attach_ok(s, t, our_exit, our_entry) and all(
+                self._clear(seg, ex) and self._free_lane(seg, s, t)
+                for seg, ex in _segs_of(our_pts, t))
+        if not ok:
+            self.committed = [r for r in self.committed if r[6] != ceid] + old_segs
+            self.side_use[(n, side)][:] = [(ceid, cend, 0.5)]
+            return None
+
+        # 落实：更新对方路由记录，并重写它的 XML
+        if cend == "exit":
+            crec["exit_p"] = their_p
+        else:
+            crec["entry_p"] = their_p
+        crec["pts"] = their_pts
+        if crec.get("elem") is not None:
+            crec["pts"] = _write_edge(crec["elem"], their_pts,
+                                      crec["exit_p"], crec["entry_p"])
+        side_name = {"L": "左", "R": "右", "T": "顶", "B": "底"}[side]
+        self.migrations.append(
+            f"{ceid} 在 {n} {side_name}边的"
+            f"{'出口' if cend == 'exit' else '入口'} "
+            f"0.5→{self._frac_of(their_p, side):.4g}（双车道）")
+        return our_pts[1:-1], our_exit, our_entry
 
     def _ok(self, segs: list[tuple[tuple, tuple]], s: str, t: str) -> bool:
         return all(
@@ -146,22 +383,35 @@ class _Router:
     def _len(pts: list[tuple]) -> float:
         return sum(abs(q[0] - p[0]) + abs(q[1] - p[1]) for p, q in zip(pts, pts[1:]))
 
-    def commit(self, pts: list[tuple], s: str, t: str) -> None:
-        """把最终路径的各段登记为占用车道。"""
+    def commit(self, pts: list[tuple], s: str, t: str, eid: str,
+               exit_p: tuple, entry_p: tuple, elem=None) -> None:
+        """登记最终路径：占用车道 + 记录附着点（供双车道迁移回改）。"""
+        self.routes[eid] = {"s": s, "t": t, "pts": list(pts),
+                            "exit_p": exit_p, "entry_p": entry_p, "elem": elem}
         for p, q in zip(pts, pts[1:]):
             if p != q:
-                self.committed.append((p[0], p[1], q[0], q[1], s, t))
+                self.committed.append((p[0], p[1], q[0], q[1], s, t, eid))
+        for node, p, end in ((s, exit_p, "exit"), (t, entry_p, "entry")):
+            side = self._side_of(p)
+            if side is not None:
+                self.side_use.setdefault((node, side), []).append(
+                    (eid, end, self._frac_of(p, side)))
 
     # ---- 各类走线（统一返回 (拐点, exit 附着点, entry 附着点)，失败返回 None）----
 
     def route_down_bottom(self, s: str, t: str) -> tuple[list, tuple, tuple] | None:
-        """底出顶进：同列优先直连，否则经行间隙带 Z/U 形绕行。"""
+        """底出顶进：同列优先直连，否则经行间隙带 Z/U 形绕行。
+
+        正常候选全灭时做双车道迁移重试（如目标顶边中点被一条回边的
+        顶出短桩反向占用，双方各退到顶边的 1/3 与 2/3）。
+        """
         sr, tr = self.rects[s], self.rects[t]
         x0, x1 = (sr[0] + sr[2]) / 2, (tr[0] + tr[2]) / 2
         p0, p1 = (x0, sr[3]), (x1, tr[1])
         y0 = sr[3] + GAP_Y / 2  # 源节点下方的行间空隙带（竖直方向无节点）
         y1 = tr[1] - GAP_Y / 2
-        best = None
+        exit_p, entry_p = (0.5, 1), (0.5, 0)
+        cands = []
         seen = set()
         for cx in [x0, x1, *self.cands]:
             if cx in seen:
@@ -169,20 +419,37 @@ class _Router:
             seen.add(cx)
             pts = [p0, (x0, y0), (cx, y0), (cx, y1), (x1, y1), p1]
             pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
-            if self._ok(_segs_of(pts, t), s, t):
+            cands.append((cx, pts))
+        best = None
+        for cx, pts in cands:
+            if self._ok(_segs_of(pts, t), s, t) \
+                    and self._attach_ok(s, t, exit_p, entry_p):
                 wps = [] if len({p[0] for p in pts}) == 1 else pts[1:-1]
                 cand = (self._len(pts) + self._penalty(cx), wps)
                 if best is None or cand[0] < best[0]:
                     best = cand
-        if best is None:
-            return None
-        return best[1], (0.5, 1), (0.5, 0)
+        if best is not None:
+            return best[1], exit_p, entry_p
+        # 双车道迁移重试：可迁移的候选里取最短
+        plans = []
+        for cx, pts in cands:
+            plan = self._migration_plan(pts, s, t, exit_p, entry_p)
+            if plan is not None:
+                plans.append((self._len(pts) + self._penalty(cx), pts, plan))
+        plans.sort(key=lambda x: x[0])
+        for _w, pts, plan in plans:
+            routed = self._apply_migration(plan, pts, s, t, exit_p, entry_p)
+            if routed is not None:
+                return routed
+        return None
 
     def route_down_side(self, s: str, t: str,
                         outward: int | None = None) -> tuple[list, tuple, tuple] | None:
         """下行且目标在侧方：从侧边出，经垂直通道，从顶/侧进。
 
         outward：强制出口侧（1 右 / -1 左）；None 时按目标方位自动选。
+        正常候选全部失败时做双车道迁移重试：若唯一障碍是源/目标节点
+        侧边上停在中点的反向短桩，把对方迁到三等分点，本边走另一个。
         """
         sr, tr = self.rects[s], self.rects[t]
         if outward is None:
@@ -191,7 +458,7 @@ class _Router:
         exit_x = sr[2] if outward > 0 else sr[0]
         exit_y = (sr[1] + sr[3]) / 2
         entry_cx = (tr[0] + tr[2]) / 2  # 目标顶边中心：最优通道，可免末段横移折叠
-        best = None
+        cands = []
         seen = set()
         for cx in [entry_cx, *self.cands]:
             if cx in seen:
@@ -209,33 +476,61 @@ class _Router:
                 entry_p = (1, 0.5) if cx > tr[2] else (0, 0.5)
                 entry = ((tr[2] if cx > tr[2] else tr[0]), (tr[1] + tr[3]) / 2)
                 pts = [(exit_x, exit_y), (cx, exit_y), (cx, entry[1]), entry]
-            if self._ok(_segs_of(pts, t), s, t):
+            pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
+            cands.append((cx, pts, entry_p))
+        best = None
+        for cx, pts, entry_p in cands:
+            if self._ok(_segs_of(pts, t), s, t) \
+                    and self._attach_ok(s, t, exit_p, entry_p):
                 cand = (self._len(pts) + self._penalty(cx), pts[1:-1], entry_p)
                 if best is None or cand[0] < best[0]:
                     best = cand
-        if best is None:
-            return None
-        return best[1], exit_p, best[2]
+        if best is not None:
+            return best[1], exit_p, best[2]
+        # 双车道迁移重试：可迁移的候选里取最短
+        plans = []
+        for cx, pts, entry_p in cands:
+            plan = self._migration_plan(pts, s, t, exit_p, entry_p)
+            if plan is not None:
+                plans.append((self._len(pts) + self._penalty(cx), pts, entry_p, plan))
+        plans.sort(key=lambda x: x[0])
+        for _w, pts, entry_p, plan in plans:
+            routed = self._apply_migration(plan, pts, s, t, exit_p, entry_p)
+            if routed is not None:
+                return routed
+        return None
 
     def route_back(self, s: str, t: str, outward: int) -> tuple[list, tuple, tuple] | None:
-        """回边（目标在上方）。两种模板，全局取最短无遮挡：
+        """回边（目标在上方）。三种模板，全局取最短无遮挡：
 
         A. 侧出侧进：经外侧页边/间隙通道，左右两侧都试（反向边不允许
            与进边共享顶边短桩，自然侧被占时从另一侧绕行）；出/入口
            附着点可在侧边上纵向偏移（0.5/0.3/0.7），避开目标侧边上
-           已占用的反向短桩；
+           已占用的反向短桩——但进入判断节点（菱形）只取 0.5 顶点：
+           draw.io 对菱形非顶点附着的周界求交不可靠，水平进线会把
+           箭头画成竖直方向；
         B. 顶出侧进：从源节点顶边垂直上行，经通道转入目标朝通道的侧边
            （同排邻居挡住侧出水平段时的退路）。
+        C. 侧出底进（仅判断节点）：菱形入口只认顶点，而侧顶点常被该
+           分支自己的出边短桩反向占用；此时侧出后经通道上行到目标
+           下方的行间空隙带，横移到目标中线竖直进入底顶点。
+
+        三个模板的候选全部失败时做双车道迁移重试（如源节点顶边中点
+        被正向入边占着，B 模板的顶出短桩与之各退到 1/3 与 2/3）。
         """
         sr, tr = self.rects[s], self.rects[t]
-        best = None
+        cands = []  # (权重, pts, exit_p, entry_p)
+
+        def _add(pts, exit_p, entry_p, cx):
+            cands.append((self._len(pts) + self._penalty(cx), pts, exit_p, entry_p))
 
         # A. 侧出侧进（两侧 × 附着点偏移）
         for side in (outward, -outward):
             exit_x = sr[2] if side > 0 else sr[0]
             entry_x = tr[2] if side > 0 else tr[0]
             for exf in (0.5, 0.3, 0.7):
-                for enf in (0.5, 0.3, 0.7):
+                # 菱形入口只吃顶点（0.5）；出口不受此限，保留偏移自由
+                for enf in ((0.5,) if t in self.decisions else (0.5, 0.3, 0.7)):
                     exit_p = (1 if side > 0 else 0, exf)
                     entry_p = (1 if side > 0 else 0, enf)
                     exit_y = sr[1] + exf * H
@@ -249,11 +544,7 @@ class _Router:
                             continue
                         pts = [(exit_x, exit_y), (cx, exit_y),
                                (cx, entry_y), (entry_x, entry_y)]
-                        if self._ok(_segs_of(pts, t), s, t):
-                            cand = (self._len(pts) + self._penalty(cx),
-                                    pts[1:-1], exit_p, entry_p)
-                            if best is None or cand[0] < best[0]:
-                                best = cand
+                        _add(pts, exit_p, entry_p, cx)
 
         # B. 顶出侧进
         x0 = (sr[0] + sr[2]) / 2
@@ -268,15 +559,48 @@ class _Router:
             entry_x = tr[2] if cx > tr[2] else tr[0]
             pts = [(x0, sr[1]), (x0, yb), (cx, yb), (cx, ey), (entry_x, ey)]
             pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
-            if self._ok(_segs_of(pts, t), s, t):
-                cand = (self._len(pts) + self._penalty(cx), pts[1:-1],
-                        (0.5, 0), entry_p)
-                if best is None or cand[0] < best[0]:
-                    best = cand
+            _add(pts, (0.5, 0), entry_p, cx)
 
-        if best is None:
-            return None
-        return best[1], best[2], best[3]
+        # C. 侧出底进（仅判断节点）：底顶点通常是菱形唯一空闲的顶点
+        if t in self.decisions and sr[1] >= tr[3]:
+            x1 = (tr[0] + tr[2]) / 2
+            yb = tr[3] + GAP_Y / 2  # 目标下方的行间空隙带
+            for side in (outward, -outward):
+                exit_x = sr[2] if side > 0 else sr[0]
+                for exf in (0.5, 0.3, 0.7):
+                    exit_p = (1 if side > 0 else 0, exf)
+                    exit_y = sr[1] + exf * H
+                    for cx in self.cands:
+                        if side > 0 and cx < exit_x + 2:
+                            continue
+                        if side < 0 and cx > exit_x - 2:
+                            continue
+                        pts = [(exit_x, exit_y), (cx, exit_y), (cx, yb),
+                               (x1, yb), (x1, tr[3])]
+                        pts = [p for i, p in enumerate(pts)
+                               if i == 0 or p != pts[i - 1]]
+                        _add(pts, exit_p, (0.5, 1), cx)
+
+        best = None
+        for w, pts, exit_p, entry_p in cands:
+            if self._ok(_segs_of(pts, t), s, t) \
+                    and self._attach_ok(s, t, exit_p, entry_p):
+                if best is None or w < best[0]:
+                    best = (w, pts, exit_p, entry_p)
+        if best is not None:
+            return best[1][1:-1], best[2], best[3]
+        # 双车道迁移重试：可迁移的候选里取最短
+        plans = []
+        for w, pts, exit_p, entry_p in cands:
+            plan = self._migration_plan(pts, s, t, exit_p, entry_p)
+            if plan is not None:
+                plans.append((w, pts, exit_p, entry_p, plan))
+        plans.sort(key=lambda x: x[0])
+        for _w, pts, exit_p, entry_p, plan in plans:
+            routed = self._apply_migration(plan, pts, s, t, exit_p, entry_p)
+            if routed is not None:
+                return routed
+        return None
 
 
 def _inside(zone: tuple[float, float], lo: float, hi: float) -> bool:
@@ -334,8 +658,13 @@ def _sink_terminals_to_bottom(vertices: list[ET.Element],
             layer[i] = last
 
 
-def apply_flow_layout(xml_text: str) -> str:
-    """给不带几何信息的流程图 mxfile XML 注入计算好的布局，返回新 XML。"""
+def _prepare(xml_text: str, router_cls: type["_Router"] | None = None):
+    """apply_flow_layout 的前半段：解析、分层、定位、建路由器。
+
+    单独抽出供 scripts/route_report.py 等调试工具复用——那里用
+    router_cls 注入插桩子类，两边共享同一套驱动逻辑。
+    返回 (root, layered, edges_sorted, router, join_nodes)。
+    """
     root = ET.fromstring(xml_text)
     model = root.find("diagram/mxGraphModel")
     if model is None:
@@ -376,7 +705,7 @@ def apply_flow_layout(xml_text: str) -> str:
     pos = _positions(layered)
 
     decisions = {c.get("id") for c in vertices if "rhombus" in (c.get("style") or "")}
-    router = _Router(pos, decisions)
+    router = (router_cls or _Router)(pos, decisions)
     join_nodes = {i for i in ids if len(preds[i]) >= 2}
     for node_id, (x, y) in pos.items():
         _set_geometry(by_id[node_id], x, y)
@@ -387,9 +716,14 @@ def apply_flow_layout(xml_text: str) -> str:
         key=lambda e: abs(pos[e.get("target")][0] - pos[e.get("source")][0])
         + abs(pos[e.get("target")][1] - pos[e.get("source")][1]),
     )
+    return root, layered, edges_sorted, router, join_nodes
+
+
+def apply_flow_layout(xml_text: str) -> str:
+    """给不带几何信息的流程图 mxfile XML 注入计算好的布局，返回新 XML。"""
+    root, _layered, edges_sorted, router, join_nodes = _prepare(xml_text)
     for e in edges_sorted:
         _normalize_edge(e, router, join_nodes)
-
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
@@ -482,6 +816,42 @@ def _set_geometry(cell: ET.Element, x: float, y: float) -> None:
     geo.set("as", "geometry")
 
 
+def _frac(v: float) -> str:
+    """附着点比例写最短 4 位小数（三等分车道 0.3333/0.6667）。"""
+    return f"{v:.4f}".rstrip("0").rstrip(".")
+
+
+def _write_edge(edge: ET.Element, pts: list[tuple],
+                exit_p: tuple, entry_p: tuple) -> list[tuple]:
+    """把路径写入 edge 的 style/geometry（附着点 + 拐点），返回去重后的点列。
+
+    双车道迁移会二次调用它重写已布边的 XML，所以写 style/geometry 前
+    一律先清空旧值。
+    """
+    pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
+    wps = pts[1:-1]
+    style = _EDGE_STYLE + (
+        f"exitX={_frac(exit_p[0])};exitY={_frac(exit_p[1])};exitDx=0;exitDy=0;"
+        f"entryX={_frac(entry_p[0])};entryY={_frac(entry_p[1])};entryDx=0;entryDy=0;"
+    )
+    if edge.get("value"):
+        style += "fontColor=#3E4144;fontSize=12;"
+    edge.set("style", style)
+    for old in edge.findall("mxGeometry"):
+        edge.remove(old)
+    geo = ET.SubElement(edge, "mxGeometry")
+    geo.set("relative", "1")
+    geo.set("as", "geometry")
+    if wps:
+        arr = ET.SubElement(geo, "Array")
+        arr.set("as", "points")
+        for x, y in wps:
+            pt = ET.SubElement(arr, "mxPoint")
+            pt.set("x", _num(x))
+            pt.set("y", _num(y))
+    return pts
+
+
 def _normalize_edge(edge: ET.Element, router: _Router,
                     join_nodes: set[str] | None = None) -> None:
     """规范化连线：强制直角正交走线，算好附着点与绕障拐点。
@@ -534,28 +904,9 @@ def _normalize_edge(edge: ET.Element, router: _Router,
         exit_p = entry_p = (0.5, 1)
     # 清理连续重复拐点（通道 x 与入口 x 重合时会产生零长度段）
     pts = [_anchor(sr, exit_p), *wps, _anchor(tr, entry_p)]
-    pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
-    wps = pts[1:-1]
-    style = _EDGE_STYLE + (
-        f"exitX={exit_p[0]};exitY={exit_p[1]};exitDx=0;exitDy=0;"
-        f"entryX={entry_p[0]};entryY={entry_p[1]};entryDx=0;entryDy=0;"
-    )
-    if edge.get("value"):
-        style += "fontColor=#3E4144;fontSize=12;"
-    edge.set("style", style)
-    for old in edge.findall("mxGeometry"):
-        edge.remove(old)
-    geo = ET.SubElement(edge, "mxGeometry")
-    geo.set("relative", "1")
-    geo.set("as", "geometry")
-    if wps:
-        arr = ET.SubElement(geo, "Array")
-        arr.set("as", "points")
-        for x, y in wps:
-            pt = ET.SubElement(arr, "mxPoint")
-            pt.set("x", _num(x))
-            pt.set("y", _num(y))
-    router.commit(pts, s, t)
+    pts = _write_edge(edge, pts, exit_p, entry_p)
+    eid = edge.get("id") or f"{s}->{t}#{len(router.routes)}"
+    router.commit(pts, s, t, eid, exit_p, entry_p, elem=edge)
 
 
 def _num(v: float) -> str:
