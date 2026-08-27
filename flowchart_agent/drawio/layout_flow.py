@@ -61,8 +61,9 @@ class _Router:
     左右页边。每条边的路径逐段做两种检查：
     - 不与任何节点包围盒内部相交（与目标节点相连的末段豁免目标自身）；
     - 不与已提交线段共线重叠（垂直交叉是正常走线，允许；同向共边在
-      节点邻域内的重叠视为总线共享——但判断节点（decisions）不豁免，
-      是/否分支必须从不同的边出去，走向才明确）。
+      节点邻域内的重叠视为总线共享——但判断节点（decisions）的出边不
+      豁免，是/否分支必须从不同的边出去，走向才明确；进入判断节点的
+      入边照常豁免，多路汇合后单箭头落入与普通节点一致）。
 
     双车道迁移：非判断节点的同一条边（左/右/顶/底），优先单车道
     （附着中点 0.5）；仅当中点被一条反向短桩（一进一出）挡住时，
@@ -94,6 +95,10 @@ class _Router:
         # 各边附着登记：(node, 'L'/'R'/'T'/'B') -> [(edge_id, 'exit'/'entry', 沿边比例)]
         self.side_use: dict[tuple[str, str], list[tuple[str, str, float]]] = {}
         self.migrations: list[str] = []  # 双车道迁移记录（供走线报告输出）
+        # 已放置的边 label 文字盒 (x1, y1, x2, y2)：新 label 只在与之相叠时才挪位
+        self.label_boxes: list[tuple[float, float, float, float]] = []
+        self.degraded: list[str] = []  # 车道耗尽被降级为矩形的判断节点
+        self.node_cells: dict = {}  # 节点 id -> mxCell（降级时改写 shape）
 
     # ---- 几何判定 ----
 
@@ -121,7 +126,8 @@ class _Router:
 
         同向共边（committed 边与本边同源=都离开、或同目标=都进入）在此
         区间内的共线重叠视为锚点短桩共享（总线）；反向共边不豁免——
-        方向相反的两个箭头不允许在同一条边上重叠。
+        方向相反的两个箭头不允许在同一条边上重叠。判断节点只限制
+        "都离开"的总线（是/否分支必须异侧），"都进入"照常豁免。
         """
         r = self.rects[i]
         return (r[1] - GAP_Y, r[3] + GAP_Y)
@@ -138,7 +144,8 @@ class _Router:
                 if hi - lo <= _PAD:
                     continue
                 shared = s if cs == s else (t if ct == t else None)
-                if (shared is not None and shared not in self.decisions
+                if (shared is not None
+                        and (ct == t or shared not in self.decisions)
                         and _inside(self._vicinity(shared), lo, hi)):
                     continue
                 out.append(rec)
@@ -148,7 +155,8 @@ class _Router:
                 if hi - lo <= _PAD:
                     continue
                 shared = s if cs == s else (t if ct == t else None)
-                if shared is not None and shared not in self.decisions:
+                if (shared is not None
+                        and (ct == t or shared not in self.decisions)):
                     z = self._vicinity(shared)
                     if z[0] <= y1 <= z[1]:
                         continue
@@ -192,6 +200,22 @@ class _Router:
         return True
 
     # ---- 双车道迁移：非判断节点某条边上反向箭头（一进一出）抢中点时的退让 ----
+
+    def degrade(self, n: str) -> None:
+        """菱形四顶点车道耗尽的兜底：把判断节点降级为矩形（保留配色）。
+
+        已就位的菱形顶点附着在矩形周界上依然有效，无需回改存量边；
+        后续经过该节点的边按普通节点走（分数附着点 + 双车道迁移 +
+        总线共享豁免），车道数显著多于菱形。
+        """
+        self.decisions.discard(n)
+        self.degraded.append(n)
+        cell = self.node_cells.get(n)
+        if cell is not None:
+            style = cell.get("style") or ""
+            cell.set("style", ";".join(
+                "rounded=1" if tok == "rhombus" else tok
+                for tok in style.split(";")))
 
     def _migration_plan(self, pts: list[tuple], s: str, t: str,
                         exit_p: tuple, entry_p: tuple) -> tuple | None:
@@ -362,7 +386,8 @@ class _Router:
         crec["pts"] = their_pts
         if crec.get("elem") is not None:
             crec["pts"] = _write_edge(crec["elem"], their_pts,
-                                      crec["exit_p"], crec["entry_p"])
+                                      crec["exit_p"], crec["entry_p"],
+                                      label_pos=crec.get("label_pos"))
         side_name = {"L": "左", "R": "右", "T": "顶", "B": "底"}[side]
         self.migrations.append(
             f"{ceid} 在 {n} {side_name}边的"
@@ -371,9 +396,16 @@ class _Router:
         return our_pts[1:-1], our_exit, our_entry
 
     def _ok(self, segs: list[tuple[tuple, tuple]], s: str, t: str) -> bool:
-        return all(
+        if not all(
             self._clear(seg, ex) and self._free_lane(seg, s, t) for seg, ex in segs
-        )
+        ):
+            return False
+        # 出/入口短桩不得短于车道宽（约一个箭头长）：更短的贴边段会被
+        # 箭头整个盖住，看起来箭头方向与线身方向差 90°
+        for seg, _ex in (segs[0], segs[-1]):
+            if abs(seg[2] - seg[0]) + abs(seg[3] - seg[1]) < _LANE:
+                return False
+        return True
 
     def _penalty(self, cx: float) -> int:
         """页边通道加罚分：有内部通道可用时不贴边绕远。"""
@@ -383,11 +415,72 @@ class _Router:
     def _len(pts: list[tuple]) -> float:
         return sum(abs(q[0] - p[0]) + abs(q[1] - p[1]) for p, q in zip(pts, pts[1:]))
 
+    # ---- 边 label 防重叠：只在与其他 label 相叠时挪位（不躲线段/节点）----
+
+    @staticmethod
+    def _label_size(text: str) -> tuple[float, float]:
+        """label 文字盒估算（fontSize=12）：CJK 全宽，其余约 0.6 倍；高 16。"""
+        plain = re.sub(r"<[^>]+>", "", text)
+        w = sum(12.0 if ord(c) >= 0x2E80 else 7.0 for c in plain)
+        return max(w, 12.0), 16.0
+
+    @staticmethod
+    def _point_at(pts: list[tuple], dist: float) -> tuple[float, float, float, float]:
+        """路径上距起点 dist 的点，及所在段的 draw.io 法向基 (nx, ny)。
+
+        draw.io（mxGraphView.getPoint）的 label 定位：dist = (gx/2+0.5)*总长，
+        垂直偏移按 (nx*gy, -ny*gy) 施加，其中 (nx, ny) = (dy/段长, dx/段长)。
+        """
+        total = 0.0
+        for p, q in zip(pts, pts[1:]):
+            seg = abs(q[0] - p[0]) + abs(q[1] - p[1])
+            if seg > 0 and dist <= total + seg:
+                f = (dist - total) / seg
+                return (p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f,
+                        (q[1] - p[1]) / seg, (q[0] - p[0]) / seg)
+            total += seg
+        return (*pts[-1], 0.0, 0.0)
+
+    def place_label(self, pts: list[tuple], text: str) -> tuple | None:
+        """label 默认中点与其他已放置 label 相叠时，返回写入 geometry 的
+        (gx, gy)；不相叠返回 None（保持 draw.io 默认，XML 不写 x/y）。
+
+        候选按侵入度递增：先在中点做垂直微挪，再沿路径换位置。所有候选
+        都躲不开时保持默认（位置至少可预期）。
+        """
+        total = self._len(pts)
+        if total <= 0:
+            return None
+        w, h = self._label_size(text)
+
+        def _box(f: float, gy: float) -> tuple:
+            x, y, nx, ny = self._point_at(pts, f * total)
+            cx, cy = x + nx * gy, y - ny * gy
+            return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+        def _hits(box: tuple) -> bool:
+            x1, y1, x2, y2 = box
+            return any(x1 < b[2] + 2 and x2 + 2 > b[0]
+                       and y1 < b[3] + 2 and y2 + 2 > b[1]
+                       for b in self.label_boxes)
+
+        cands = [(0.5, 0.0)] + [(0.5, gy) for gy in (12.0, -12.0, 22.0, -22.0)]
+        cands += [(f, gy) for f in (0.3, 0.7, 0.15, 0.85)
+                  for gy in (0.0, 12.0, -12.0, 22.0, -22.0)]
+        for f, gy in cands:
+            box = _box(f, gy)
+            if not _hits(box):
+                self.label_boxes.append(box)
+                return None if (f, gy) == (0.5, 0.0) else ((f - 0.5) * 2, gy)
+        self.label_boxes.append(_box(0.5, 0.0))
+        return None
+
     def commit(self, pts: list[tuple], s: str, t: str, eid: str,
-               exit_p: tuple, entry_p: tuple, elem=None) -> None:
+               exit_p: tuple, entry_p: tuple, elem=None, label_pos=None) -> None:
         """登记最终路径：占用车道 + 记录附着点（供双车道迁移回改）。"""
         self.routes[eid] = {"s": s, "t": t, "pts": list(pts),
-                            "exit_p": exit_p, "entry_p": entry_p, "elem": elem}
+                            "exit_p": exit_p, "entry_p": entry_p, "elem": elem,
+                            "label_pos": label_pos}
         for p, q in zip(pts, pts[1:]):
             if p != q:
                 self.committed.append((p[0], p[1], q[0], q[1], s, t, eid))
@@ -528,8 +621,10 @@ class _Router:
         for side in (outward, -outward):
             exit_x = sr[2] if side > 0 else sr[0]
             entry_x = tr[2] if side > 0 else tr[0]
-            for exf in (0.5, 0.3, 0.7):
-                # 菱形入口只吃顶点（0.5）；出口不受此限，保留偏移自由
+            # 菱形出/入口都只认顶点（0.5）：非顶点附着会画在菱形腰上，
+            # 且兄弟分支借偏移挤进同侧（是/否必须异侧）；普通节点出口
+            # 保留偏移自由，避开目标侧边上已占用的反向短桩
+            for exf in ((0.5,) if s in self.decisions else (0.5, 0.3, 0.7)):
                 for enf in ((0.5,) if t in self.decisions else (0.5, 0.3, 0.7)):
                     exit_p = (1 if side > 0 else 0, exf)
                     entry_p = (1 if side > 0 else 0, enf)
@@ -567,7 +662,8 @@ class _Router:
             yb = tr[3] + GAP_Y / 2  # 目标下方的行间空隙带
             for side in (outward, -outward):
                 exit_x = sr[2] if side > 0 else sr[0]
-                for exf in (0.5, 0.3, 0.7):
+                # 源是菱形时同样只吃顶点（0.5），与 A 模板同一规矩
+                for exf in ((0.5,) if s in self.decisions else (0.5, 0.3, 0.7)):
                     exit_p = (1 if side > 0 else 0, exf)
                     exit_y = sr[1] + exf * H
                     for cx in self.cands:
@@ -706,6 +802,7 @@ def _prepare(xml_text: str, router_cls: type["_Router"] | None = None):
 
     decisions = {c.get("id") for c in vertices if "rhombus" in (c.get("style") or "")}
     router = (router_cls or _Router)(pos, decisions)
+    router.node_cells = by_id
     join_nodes = {i for i in ids if len(preds[i]) >= 2}
     for node_id, (x, y) in pos.items():
         _set_geometry(by_id[node_id], x, y)
@@ -822,11 +919,13 @@ def _frac(v: float) -> str:
 
 
 def _write_edge(edge: ET.Element, pts: list[tuple],
-                exit_p: tuple, entry_p: tuple) -> list[tuple]:
+                exit_p: tuple, entry_p: tuple,
+                label_pos: tuple | None = None) -> list[tuple]:
     """把路径写入 edge 的 style/geometry（附着点 + 拐点），返回去重后的点列。
 
     双车道迁移会二次调用它重写已布边的 XML，所以写 style/geometry 前
-    一律先清空旧值。
+    一律先清空旧值。label_pos 是 label 防重叠的挪位结果 (gx, gy)，写入
+    geometry 的 x/y（draw.io：x∈[-1,1] 沿路径定位，y 垂直偏移像素）。
     """
     pts = [p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]]
     wps = pts[1:-1]
@@ -840,6 +939,9 @@ def _write_edge(edge: ET.Element, pts: list[tuple],
     for old in edge.findall("mxGeometry"):
         edge.remove(old)
     geo = ET.SubElement(edge, "mxGeometry")
+    if label_pos is not None:
+        geo.set("x", _frac(label_pos[0]))
+        geo.set("y", _num(label_pos[1]))
     geo.set("relative", "1")
     geo.set("as", "geometry")
     if wps:
@@ -866,47 +968,65 @@ def _normalize_edge(edge: ET.Element, router: _Router,
     s, t = edge.get("source"), edge.get("target")
     sr, tr = router.rects[s], router.rects[t]
     dx, dy = tr[0] - sr[0], tr[1] - sr[1]
+    outward = 1 if dx >= 0 else -1
+
+    def _try():
+        """按当前 decisions 状态试模板（降级后重试时模板序列会重算）。"""
+        if dy > 0:  # 向下：同列底出顶进；左右分叉优先侧边出，侧出无解再底出绕行
+            if abs(dx) < 1:
+                # 同列优先直连；直连/绕行全灭时退到侧出（如目标是判断+汇合节点，
+                # 顶边中点已被占且菱形不享受总线豁免——两侧页边通道往往通畅）
+                tries = ["bottom", "right", "left"]
+            else:
+                pref = "right" if dx > 0 else "left"
+                other = "left" if pref == "right" else "right"
+                if s in router.decisions:
+                    tries = [pref, "bottom", other]
+                elif join_nodes and t in join_nodes:
+                    tries = ["bottom", pref]
+                else:
+                    tries = [pref, "bottom"]
+            for how in tries:
+                routed = (router.route_down_bottom(s, t) if how == "bottom"
+                          else router.route_down_side(s, t, 1 if how == "right" else -1))
+                if routed is not None:
+                    return routed
+            return None
+        if dy < 0:  # 回边：从侧边出、同侧进，经外侧通道绕开中间节点
+            return router.route_back(s, t, outward)
+        return None
+
     wps: list[tuple] = []
-    if dy > 0:  # 向下：同列底出顶进；左右分叉优先侧边出，侧出无解再底出绕行
-        if abs(dx) < 1:
-            tries = ["bottom", "right", "left"] if s in router.decisions else ["bottom"]
-        else:
-            pref = "right" if dx > 0 else "left"
-            other = "left" if pref == "right" else "right"
-            if s in router.decisions:
-                tries = [pref, "bottom", other]
-            elif join_nodes and t in join_nodes:
-                tries = ["bottom", pref]
-            else:
-                tries = [pref, "bottom"]
-        routed = None
-        for how in tries:
-            if how == "bottom":
-                routed = router.route_down_bottom(s, t)
-            else:
-                routed = router.route_down_side(s, t, 1 if how == "right" else -1)
-            if routed is not None:
-                break
-        if routed is None:
-            logger.warning("边 %s -> %s 找不到无遮挡通道，退回 draw.io 自动走线", s, t)
+    routed = _try()
+    if routed is None and dy != 0 \
+            and (s in router.decisions or t in router.decisions):
+        # 菱形四顶点车道耗尽的兜底：两端（先源后目标）的判断节点降级为
+        # 矩形后整体重试——一般判断节点本不该有太多线路出入，矩形车道更多
+        for n in (s, t):
+            if n in router.decisions:
+                router.degrade(n)
+                logger.warning(
+                    "边 %s -> %s 无路可走，判断节点 %s 降级为矩形重试", s, t, n)
+                routed = _try()
+                if routed is not None:
+                    break
+    if dy == 0:  # 同层：下出下进（draw.io 自动向下微绕，行间空隙带内无节点）
+        exit_p = entry_p = (0.5, 1)
+    elif routed is None:
+        logger.warning("边 %s -> %s 找不到无遮挡通道，退回 draw.io 自动走线", s, t)
+        if dy > 0:
             exit_p, entry_p = (0.5, 1), (0.5, 0)
         else:
-            wps, exit_p, entry_p = routed
-    elif dy < 0:  # 回边：从侧边出、同侧进，经外侧通道绕开中间节点
-        outward = 1 if dx >= 0 else -1
-        routed = router.route_back(s, t, outward)
-        if routed is None:
-            logger.warning("回边 %s -> %s 找不到无遮挡通道，退回 draw.io 自动走线", s, t)
             exit_p = entry_p = (1 if outward > 0 else 0, 0.5)
-        else:
-            wps, exit_p, entry_p = routed
-    else:  # 同层：下出下进（draw.io 自动向下微绕，行间空隙带内无节点）
-        exit_p = entry_p = (0.5, 1)
+    else:
+        wps, exit_p, entry_p = routed
     # 清理连续重复拐点（通道 x 与入口 x 重合时会产生零长度段）
     pts = [_anchor(sr, exit_p), *wps, _anchor(tr, entry_p)]
-    pts = _write_edge(edge, pts, exit_p, entry_p)
+    text = edge.get("value") or ""
+    label_pos = router.place_label(pts, text) if text else None
+    pts = _write_edge(edge, pts, exit_p, entry_p, label_pos=label_pos)
     eid = edge.get("id") or f"{s}->{t}#{len(router.routes)}"
-    router.commit(pts, s, t, eid, exit_p, entry_p, elem=edge)
+    router.commit(pts, s, t, eid, exit_p, entry_p, elem=edge, label_pos=label_pos)
 
 
 def _num(v: float) -> str:

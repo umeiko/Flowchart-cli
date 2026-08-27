@@ -171,6 +171,7 @@ def main() -> int:
         router.attempts = []
         router._fails = []
         n_mig = len(router.migrations)
+        n_deg = len(router.degraded)
         lf._normalize_edge(e, router, join_nodes)
 
         head = f"[{eid}] {label + ' ' if label else ''}{s}「{_label(by_id.get(s))}」" \
@@ -192,6 +193,9 @@ def main() -> int:
                 lines.append(f"  ✗ {att['template']} — {reasons or '无候选通道'}")
         for mig in router.migrations[n_mig:]:
             lines.append(f"  ↻ 双车道迁移：{mig}")
+        for nid in router.degraded[n_deg:]:
+            lines.append(
+                f"  ▼ 判断节点 {nid}「{_label(by_id.get(nid))}」车道耗尽，降级为矩形后重试")
         if not router.attempts or not router.attempts[-1]["ok"]:
             lines.append("  ⚠ 全部模板失败 → 退回 draw.io 自动走线（可能穿节点/重叠）")
             n_fallback += 1
@@ -201,6 +205,8 @@ def main() -> int:
 
     lines.append("## 4. 汇总")
     lines.append(f"  边总数 {len(edges_sorted)}：路由成功 {n_ok}，同层自动 {n_same}，回退 {n_fallback}")
+    if router.degraded:
+        lines.append(f"  降级为矩形的判断节点：{' '.join(router.degraded)}")
 
     report = "\n".join(lines) + "\n"
     report_path = out_dir / f"{src.stem}.route_report.txt"
