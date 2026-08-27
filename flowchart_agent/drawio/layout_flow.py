@@ -5,7 +5,9 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
 - 分层：从入度为 0 的起点做最长路分层（自上而下，一层一行）；
 - 层内排序：barycenter 启发式（两遍向下 + 一遍向上），平局保持 XML 书写
   顺序——判断节点先写的分支排左、后写的排右；
-- 坐标：所有节点严格等大（W×H），每层水平居中于最宽层；「结束/终止/End」
+- 坐标：同行节点等大（宽×高见 FlowGrid，可由 apply_flow_layout
+  的 grid 参数覆盖；高度按节点文字换行数自适应、全图统一取最高值，
+  菱形再高 diamond_ratio 倍），每层水平居中于最宽层；「结束/终止/End」
   类无出边终节点强制沉底（最末层被流程步骤占用时独占新起一行）；
 - 连线：强制规范化为直角正交走线（orthogonalEdgeStyle;rounded=0），
   按相对位置写 exit/entry 附着点，模型写的走线样式与几何一律清除；
@@ -31,18 +33,78 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
 from __future__ import annotations
 
 import logging
+import math
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, replace
 
 logger = logging.getLogger(__name__)
 
-# 网格常量（节点宽与 prompts/drawio.py 流程图模板的换行说明保持一致）
-W = 220        # 节点宽
-H = 70         # 节点高
-GAP_X = 60     # 层内节点水平间距（给分支标签留位）
-GAP_Y = 60     # 层间垂直间距
-X0 = 40        # 整图左边距
-Y0 = 40        # 整图顶边距
+
+@dataclass(frozen=True)
+class FlowGrid:
+    """流程图网格参数：节点宽/最小高与间距。
+
+    apply_flow_layout 可按需覆盖（如技能包指定 172px 宽）；h 是最小
+    高度——实际高度按节点文字换行数自适应（全图统一取最高值，保持
+    严格等大），写死会在文字折行时溢出。
+    """
+
+    w: int = 220       # 节点宽
+    h: int = 70        # 节点最小高（文字换行更多时全图统一加高）
+    gap_x: int = 60    # 层内节点水平间距（给分支标签留位）
+    gap_y: int = 60    # 层间垂直间距
+    x0: int = 40       # 整图左边距
+    y0: int = 40       # 整图顶边距
+    diamond_ratio: float = 1.6  # 菱形高 = 普通框高 × 此倍数（同高太矮，文字贴着腰）
+
+
+_DEFAULT_GRID = FlowGrid()
+
+_LINE_H = 18   # 节点内单行文字高（fontSize 12 + 行距）
+_TEXT_PAD = 12  # 节点内左右留白合计（估算折行时从可用宽扣减）
+_H_PAD = 10    # 节点内上下留白合计
+
+
+def make_flow_grid(
+    node_width=None, node_height=None, gap_x=None, gap_y=None
+) -> FlowGrid | None:
+    """把工具层的可选布局参数汇成 FlowGrid；全为 None 返回 None（用默认）。
+
+    非法值（非数字、非正数）抛 ValueError，由工具层拦回给模型修正。
+    """
+    vals = {"w": node_width, "h": node_height, "gap_x": gap_x, "gap_y": gap_y}
+    vals = {k: v for k, v in vals.items() if v is not None}
+    if not vals:
+        return None
+    for k, v in vals.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            raise ValueError(f"布局参数 {k} 必须是正数，收到 {v!r}")
+    return replace(_DEFAULT_GRID, **{k: int(v) for k, v in vals.items()})
+
+
+def _node_lines(value: str, width: int) -> int:
+    """节点文字折行数估算：先按显式 <br/> 分段，再按可用宽估每段行数。
+
+    字号 12 下 CJK 约 14px、其余约 7px，可用宽 = 节点宽 - 12；与
+    prompts/drawio.py 的换行说明（220px ≈ 14 个汉字一行）保持一致。
+    """
+    usable = max(20.0, width - _TEXT_PAD)
+    lines = 0
+    for seg in re.split(r"(?i)<br\s*/?>", value):
+        seg = re.sub(r"<[^>]+>", "", seg)  # 其他 HTML 标记不占字宽
+        px = sum(14.0 if ord(c) >= 0x2E80 else 7.0 for c in seg)
+        lines += max(1, math.ceil(px / usable))
+    return max(1, lines)
+
+
+def _auto_height(vertices: list[ET.Element], grid: FlowGrid) -> FlowGrid:
+    """高度跟随换行：全图统一高度 = max(最小高, 最高节点所需)。"""
+    need = max(
+        (_node_lines(c.get("value") or "", grid.w) for c in vertices),
+        default=1,
+    ) * _LINE_H + _H_PAD
+    return grid if need <= grid.h else replace(grid, h=need)
 
 _EDGE_STYLE = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#666666;"
 
@@ -72,9 +134,16 @@ class _Router:
     """
 
     def __init__(self, pos: dict[str, tuple[float, float]],
-                 decisions: set[str] | None = None):
+                 decisions: set[str] | None = None,
+                 grid: FlowGrid | None = None,
+                 heights: dict[str, int] | None = None):
+        self.g = grid or _DEFAULT_GRID
         self.decisions = decisions or set()
-        self.rects = {i: (x, y, x + W, y + H) for i, (x, y) in pos.items()}
+        # 每节点实际高度（菱形更高）；heights 缺省时全图等大
+        self.rects = {
+            i: (x, y, x + self.g.w, y + (heights or {}).get(i, self.g.h))
+            for i, (x, y) in pos.items()
+        }
         bounds = sorted({v for r in self.rects.values() for v in (r[0], r[2])})
         self.xlo, self.xhi = bounds[0], bounds[-1]
         self.cands: list[float] = []
@@ -130,7 +199,7 @@ class _Router:
         "都离开"的总线（是/否分支必须异侧），"都进入"照常豁免。
         """
         r = self.rects[i]
-        return (r[1] - GAP_Y, r[3] + GAP_Y)
+        return (r[1] - self.g.gap_y, r[3] + self.g.gap_y)
 
     def _lane_conflicts(self, seg: tuple, s: str, t: str) -> list[tuple]:
         """与 seg 共线重叠且不被豁免的已提交线段（垂直交叉是正常走线，不算）。"""
@@ -193,7 +262,9 @@ class _Router:
             side = self._side_of(p)
             if side is None:
                 continue
-            f, span = (p[1], H) if side in ("L", "R") else (p[0], W)
+            r = self.rects[node]  # 用节点实际边长（菱形更高）
+            f, span = (p[1], r[3] - r[1]) if side in ("L", "R") \
+                else (p[0], r[2] - r[0])
             for _eid, end2, f2 in self.side_use.get((node, side), []):
                 if end2 != end and abs(f2 - f) * span < _LANE - 1e-6:
                     return False
@@ -311,7 +382,8 @@ class _Router:
             """
             if len(old_pts) < 2:
                 return None
-            off = (rect[1] + f * H) if horiz else (rect[0] + f * W)
+            off = (rect[1] + f * (rect[3] - rect[1])) if horiz \
+                else (rect[0] + f * (rect[2] - rect[0]))
             new_p = (old_p[0], f) if horiz else (f, old_p[1])
             if which == "exit":
                 first, nxt = old_pts[0], old_pts[1]
@@ -501,8 +573,8 @@ class _Router:
         sr, tr = self.rects[s], self.rects[t]
         x0, x1 = (sr[0] + sr[2]) / 2, (tr[0] + tr[2]) / 2
         p0, p1 = (x0, sr[3]), (x1, tr[1])
-        y0 = sr[3] + GAP_Y / 2  # 源节点下方的行间空隙带（竖直方向无节点）
-        y1 = tr[1] - GAP_Y / 2
+        y0 = sr[3] + self.g.gap_y / 2  # 源节点下方的行间空隙带（竖直方向无节点）
+        y1 = tr[1] - self.g.gap_y / 2
         exit_p, entry_p = (0.5, 1), (0.5, 0)
         cands = []
         seen = set()
@@ -562,7 +634,7 @@ class _Router:
                 # 保证箭头朝下居中（贴着顶边横移会把箭头画成侧向）
                 entry_p = (0.5, 0)
                 entry = ((tr[0] + tr[2]) / 2, tr[1])
-                yb = tr[1] - GAP_Y / 2
+                yb = tr[1] - self.g.gap_y / 2
                 pts = [(exit_x, exit_y), (cx, exit_y), (cx, yb),
                        (entry[0], yb), entry]
             else:  # 通道在目标侧方：从朝通道的侧边进
@@ -628,8 +700,8 @@ class _Router:
                 for enf in ((0.5,) if t in self.decisions else (0.5, 0.3, 0.7)):
                     exit_p = (1 if side > 0 else 0, exf)
                     entry_p = (1 if side > 0 else 0, enf)
-                    exit_y = sr[1] + exf * H
-                    entry_y = tr[1] + enf * H
+                    exit_y = sr[1] + exf * (sr[3] - sr[1])
+                    entry_y = tr[1] + enf * (tr[3] - tr[1])
                     for cx in self.cands:
                         limit = (max(exit_x, entry_x) + 2 if side > 0
                                  else min(exit_x, entry_x) - 2)
@@ -643,7 +715,7 @@ class _Router:
 
         # B. 顶出侧进
         x0 = (sr[0] + sr[2]) / 2
-        yb = sr[1] - GAP_Y / 2  # 源节点上方的行间空隙带（竖直方向无节点）
+        yb = sr[1] - self.g.gap_y / 2  # 源节点上方的行间空隙带（竖直方向无节点）
         ey = (tr[1] + tr[3]) / 2
         seen = set()
         for cx in [x0, *self.cands]:
@@ -659,13 +731,13 @@ class _Router:
         # C. 侧出底进（仅判断节点）：底顶点通常是菱形唯一空闲的顶点
         if t in self.decisions and sr[1] >= tr[3]:
             x1 = (tr[0] + tr[2]) / 2
-            yb = tr[3] + GAP_Y / 2  # 目标下方的行间空隙带
+            yb = tr[3] + self.g.gap_y / 2  # 目标下方的行间空隙带
             for side in (outward, -outward):
                 exit_x = sr[2] if side > 0 else sr[0]
                 # 源是菱形时同样只吃顶点（0.5），与 A 模板同一规矩
                 for exf in ((0.5,) if s in self.decisions else (0.5, 0.3, 0.7)):
                     exit_p = (1 if side > 0 else 0, exf)
-                    exit_y = sr[1] + exf * H
+                    exit_y = sr[1] + exf * (sr[3] - sr[1])
                     for cx in self.cands:
                         if side > 0 and cx < exit_x + 2:
                             continue
@@ -719,8 +791,9 @@ def _segs_of(pts: list[tuple], t: str) -> list[tuple[tuple, tuple]]:
 
 
 def _anchor(rect: tuple, p: tuple) -> tuple:
-    """附着点 (比例x, 比例y) 换算成绝对坐标。"""
-    return (rect[0] + p[0] * W, rect[1] + p[1] * H)
+    """附着点 (比例x, 比例y) 换算成绝对坐标（按节点实际边长，菱形更高）。"""
+    return (rect[0] + p[0] * (rect[2] - rect[0]),
+            rect[1] + p[1] * (rect[3] - rect[1]))
 
 
 _TERMINAL_RE = re.compile(r"^\s*(结束|终止|end\b)", re.IGNORECASE)
@@ -754,11 +827,13 @@ def _sink_terminals_to_bottom(vertices: list[ET.Element],
             layer[i] = last
 
 
-def _prepare(xml_text: str, router_cls: type["_Router"] | None = None):
+def _prepare(xml_text: str, router_cls: type["_Router"] | None = None,
+             grid: FlowGrid | None = None):
     """apply_flow_layout 的前半段：解析、分层、定位、建路由器。
 
     单独抽出供 scripts/route_report.py 等调试工具复用——那里用
     router_cls 注入插桩子类，两边共享同一套驱动逻辑。
+    grid：节点尺寸/间距（None 用默认）；高度先按文字换行自适应。
     返回 (root, layered, edges_sorted, router, join_nodes)。
     """
     root = ET.fromstring(xml_text)
@@ -798,14 +873,20 @@ def _prepare(xml_text: str, router_cls: type["_Router"] | None = None):
     layers_of = _assign_layers(ids, preds, succs, order)
     _sink_terminals_to_bottom(vertices, succs, layers_of)
     layered = _order_layers(ids, layers_of, preds, succs, order)
-    pos = _positions(layered)
-
+    grid = _auto_height(vertices, grid or _DEFAULT_GRID)
     decisions = {c.get("id") for c in vertices if "rhombus" in (c.get("style") or "")}
-    router = (router_cls or _Router)(pos, decisions)
+    # 菱形比普通框高 diamond_ratio 倍：菱形内接文字区小，同高会太矮贴腰
+    heights = {
+        i: round(grid.h * grid.diamond_ratio) if i in decisions else grid.h
+        for i in ids
+    }
+    pos = _positions(layered, grid, heights)
+
+    router = (router_cls or _Router)(pos, decisions, grid, heights)
     router.node_cells = by_id
     join_nodes = {i for i in ids if len(preds[i]) >= 2}
     for node_id, (x, y) in pos.items():
-        _set_geometry(by_id[node_id], x, y)
+        _set_geometry(by_id[node_id], x, y, grid, heights[node_id])
     # 按曼哈顿距离升序路由：短边/同列直连先占位，长跳边后绕——
     # 否则跳边先占了判断节点的底边出口，同列直连的分支反而被迫侧出
     edges_sorted = sorted(
@@ -816,9 +897,13 @@ def _prepare(xml_text: str, router_cls: type["_Router"] | None = None):
     return root, layered, edges_sorted, router, join_nodes
 
 
-def apply_flow_layout(xml_text: str) -> str:
-    """给不带几何信息的流程图 mxfile XML 注入计算好的布局，返回新 XML。"""
-    root, _layered, edges_sorted, router, join_nodes = _prepare(xml_text)
+def apply_flow_layout(xml_text: str, grid: FlowGrid | None = None) -> str:
+    """给不带几何信息的流程图 mxfile XML 注入计算好的布局，返回新 XML。
+
+    grid：可选的节点尺寸/间距覆盖（见 FlowGrid）；None 用默认 220×70。
+    """
+    root, _layered, edges_sorted, router, join_nodes = _prepare(
+        xml_text, grid=grid)
     for e in edges_sorted:
         _normalize_edge(e, router, join_nodes)
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
@@ -887,29 +972,34 @@ def _order_layers(
     return layered
 
 
-def _positions(layered: list[list[str]]) -> dict[str, tuple[float, float]]:
-    """每层水平居中于最宽层，节点严格等大。"""
-    max_w = max(len(lv) * W + (len(lv) - 1) * GAP_X for lv in layered)
+def _positions(layered: list[list[str]], grid: FlowGrid = _DEFAULT_GRID,
+               heights: dict[str, int] | None = None) -> dict[str, tuple[float, float]]:
+    """每层水平居中于最宽层。同行节点等大，行高取行内最高节点（菱形更高），
+    层间间距固定 gap_y。"""
+    max_w = max(len(lv) * grid.w + (len(lv) - 1) * grid.gap_x for lv in layered)
     pos: dict[str, tuple[float, float]] = {}
+    y = float(grid.y0)
     for lv, nodes in enumerate(layered):
-        row_w = len(nodes) * W + (len(nodes) - 1) * GAP_X
-        x = X0 + (max_w - row_w) / 2
-        y = Y0 + lv * (H + GAP_Y)
+        row_w = len(nodes) * grid.w + (len(nodes) - 1) * grid.gap_x
+        x = grid.x0 + (max_w - row_w) / 2
         for n in nodes:
             pos[n] = (x, y)
-            x += W + GAP_X
+            x += grid.w + grid.gap_x
+        row_h = max((heights or {}).get(n, grid.h) for n in nodes)
+        y += row_h + grid.gap_y
     return pos
 
 
-def _set_geometry(cell: ET.Element, x: float, y: float) -> None:
+def _set_geometry(cell: ET.Element, x: float, y: float,
+                  grid: FlowGrid = _DEFAULT_GRID, h: int | None = None) -> None:
     """覆盖写入节点的 mxGeometry（先清掉模型可能写的旧几何）。"""
     for old in cell.findall("mxGeometry"):
         cell.remove(old)
     geo = ET.SubElement(cell, "mxGeometry")
     geo.set("x", _num(x))
     geo.set("y", _num(y))
-    geo.set("width", str(W))
-    geo.set("height", str(H))
+    geo.set("width", str(grid.w))
+    geo.set("height", str(h if h is not None else grid.h))
     geo.set("as", "geometry")
 
 

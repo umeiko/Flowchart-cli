@@ -95,7 +95,7 @@ DRAWIO_FLOW_SYSTEM = """你是一个流程图绘制专家。根据用户提供�
 - 连线（edge）：每条只写 `edge="1" parent="1" source="起点id" target="终点id"`，分支连线把标签写在 `value` 里（如"是"/"否"）；**style 留空即可**，走线样式由系统统一为直角正交；
 - **判断节点的每条出边都必须有标签**；连线要忠实表达文档的先后与分支关系，一条都不能漏；
 - 节点 id 只用英文字母、数字、下划线（如 start、s2、j1），不要重复；
-- value 中的特殊字符必须转义：`&` → `&amp;`，`<` → `&lt;`，`>` → `&gt;`，`"` → `&quot;`；文字需要换行时用 `&lt;br/&gt;`（节点框宽 220px，约 14 个汉字一行，超长文字请主动换行）；
+- value 中的特殊字符必须转义：`&` → `&amp;`，`<` → `&lt;`，`>` → `&gt;`，`"` → `&quot;`；文字需要换行时用 `&lt;br/&gt;`（节点框宽 @@NODE_W@@px，约 @@WRAP_CHARS@@ 个汉字一行，超长文字请主动换行；框高会随换行自动增加，不用担心写不下）；
 - 文字忠实于文档原文，简洁，不要臆造内容；文档里提到的步骤一个都不能漏。
 
 @@STYLE_RULES@@
@@ -122,17 +122,24 @@ DRAWIO_FLOW_DEFAULT_STYLE = """## 配色规则（只允许以下颜色）
 - 分支汇合回到主流程后，其后的必经步骤恢复主色蓝。"""
 
 
-def drawio_system_prompt(diagram_type: str, style_rules: str = "") -> str:
+def drawio_system_prompt(diagram_type: str, style_rules: str = "",
+                         node_w: int = 220) -> str:
     """按图型返回 drawio 生成系统提示词，注入 style 规则段（空则用内置默认）。
 
     diagram_type：flowchart 或 architecture（见 router.route_diagram_type）。
     style_rules：Style.engine_hint("drawio", diagram_type) 的返回。
+    node_w：流程图节点宽（FlowGrid.w），用于换行说明与布局器保持一致
+    （约每 14px 一个汉字，与 layout_flow._node_lines 的估算口径相同）。
     """
     if diagram_type == "flowchart":
         template, default = DRAWIO_FLOW_SYSTEM, DRAWIO_FLOW_DEFAULT_STYLE
     else:
         template, default = DRAWIO_ARCH_SYSTEM, DRAWIO_ARCH_DEFAULT_STYLE
-    return template.replace(_STYLE_TOKEN, style_rules.strip() or default)
+    return (
+        template.replace(_STYLE_TOKEN, style_rules.strip() or default)
+        .replace("@@NODE_W@@", str(node_w))
+        .replace("@@WRAP_CHARS@@", str(max(4, int((node_w - 12) / 14))))
+    )
 
 
 # 兼容：独立 PoC 脚本（scripts/gen_drawio.py）直接引用架构图模板

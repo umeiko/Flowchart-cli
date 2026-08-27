@@ -137,7 +137,7 @@ def main() -> int:
 
     lines: list[str] = []
     lines.append(f"# 走线报告：{src.name}")
-    lines.append(f"网格：节点 {lf.W}×{lf.H}，层间距 {lf.GAP_Y}，层内列距 {lf.GAP_X}")
+    lines.append(f"网格：节点 {router.g.w}×{router.g.h}，层间距 {router.g.gap_y}，层内列距 {router.g.gap_x}")
     lines.append("")
 
     lines.append("## 1. 分层与坐标")

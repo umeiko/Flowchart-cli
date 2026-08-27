@@ -9,7 +9,7 @@ from typing import Callable
 
 from .agent import FlowchartAgent
 from .config import Settings
-from .drawio import check_drawio_available, render_drawio
+from .drawio import check_drawio_available, make_flow_grid, render_drawio
 from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
@@ -40,8 +40,13 @@ class DiagramSession:
         self.version = 0
         self.style: Style | None = None  # 当前风格插件；None = 默认风格
         self._background_override: str | None = None  # 用户显式指定的画布背景色
+        # drawio 流程图的节点尺寸/间距覆盖（create_diagram 的可选布局参数，
+        # FlowGrid；None = 默认 220×70/间距 60），修改图时沿用
+        self._flow_grid = None
         # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
         self.on_delta: Callable[[str], None] | None = None
+        # 界面层的思考流回调（推理模型 reasoning_content，仅提示用）；None = 不需要
+        self.on_reasoning: Callable[[str], None] | None = None
         # 界面层的轮次开始回调（清空上一轮流式显示）；None = 不需要
         self.on_round_start: Callable[[int], None] | None = None
         # 视觉检视强度：full=完整（排版+内容语义），layout=仅基础图形检视
@@ -205,7 +210,15 @@ class DiagramSession:
         image_path: str | None = None,
         background: str | None = None,
         style: str | None = None,
+        node_width=None,
+        node_height=None,
+        gap_x=None,
+        gap_y=None,
     ) -> str:
+        try:
+            self._flow_grid = make_flow_grid(node_width, node_height, gap_x, gap_y)
+        except ValueError as e:
+            return f"错误：{e}"
         self.requirement = requirement
         reference = None
         if image_path:
@@ -264,10 +277,12 @@ class DiagramSession:
             background=self._background_override,
             style=self.effective_style,
             on_delta=self.on_delta,
+            on_reasoning=self.on_reasoning,
             verify_mode=self.verify_mode,
             on_round_start=self.on_round_start,
             action=action,
             engine=self.engine,
+            flow_grid=self._flow_grid,
         )
         if not result.success:
             feedback = result.final_feedback or "未知原因"

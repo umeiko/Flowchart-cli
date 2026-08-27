@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from .config import Settings
 from .drawio import (
     DrawioNotFoundError,
+    FlowGrid,
     apply_flow_layout,
     apply_font,
     apply_layout,
@@ -154,10 +155,12 @@ class FlowchartAgent:
         background: str | None = None,
         style: Style | None = None,
         on_delta=None,
+        on_reasoning=None,
         verify_mode: str = "full",
         on_round_start=None,
         action: str = "",
         engine: str = "mermaid",
+        flow_grid: FlowGrid | None = None,
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -169,12 +172,16 @@ class FlowchartAgent:
         style：风格插件（见 styles.py），mermaid 注入主题指令与 prompt_hint，
         drawio 注入引擎专属规则段（engine_hints，缺失时用提示词内置默认）。
         on_delta：生成阶段的流式文本回调（界面层实时显示），None 为非流式。
+        on_reasoning：生成阶段的思考流回调（推理模型的 reasoning_content，
+        仅界面提示与用量估算用），None 为不需要。
         verify_mode：视觉检视强度，full=完整检视（排版+内容语义），
         layout=仅基础图形检视（视觉模型识字能力弱时用，防止误判死循环）。
         on_round_start：每轮开始时回调（界面层清空上一轮的流式显示）。
         action：触发本次运行的动作描述（如 create_diagram/modify_diagram
         及其参数摘要），仅用于 run.log 记录任务上下文。
         engine：出图引擎，mermaid（默认）或 drawio（需要配置 DRAWIO_PATH）。
+        flow_grid：drawio 流程图的节点尺寸/间距覆盖（FlowGrid，来自
+        create_diagram 的可选布局参数），None 用默认 220×70/间距 60。
         """
         engine = engine.strip().lower()
         if engine == "drawio":
@@ -247,8 +254,9 @@ class FlowchartAgent:
                 code, raw = self._generate(
                     document, code, feedback,
                     image=first_round_image if round_no == 1 else None,
-                    on_delta=on_delta, style=style, engine=engine,
-                    diagram_type=diagram_type,
+                    on_delta=on_delta, on_reasoning=on_reasoning,
+                    style=style, engine=engine,
+                    diagram_type=diagram_type, flow_grid=flow_grid,
                 )
                 raw_path = output_dir / f"round_{round_no}_generate_raw.txt"
                 raw_path.write_text(raw, encoding="utf-8")
@@ -273,12 +281,11 @@ class FlowchartAgent:
                     # 配色规则由 style 引擎段注入提示词；此处注入确定性几何
                     # （架构图网格 / 流程图分层分支布局），XML 非法直接打回重修
                     try:
-                        layout_fn = (
-                            apply_flow_layout
-                            if diagram_type == "flowchart"
-                            else apply_layout
-                        )
-                        styled = layout_fn(sanitize_xml(code))
+                        if diagram_type == "flowchart":
+                            styled = apply_flow_layout(
+                                sanitize_xml(code), grid=flow_grid)
+                        else:
+                            styled = apply_layout(sanitize_xml(code))
                         # 字体后处理（.env DRAWIO_FONT_FAMILY/DRAWIO_FONT_SIZE，
                         # 未配置时原样返回），让产物 .drawio 也带上规范字体
                         styled = apply_font(
@@ -468,9 +475,11 @@ class FlowchartAgent:
         feedback: str,
         image: Path | None = None,
         on_delta=None,
+        on_reasoning=None,
         style: Style | None = None,
         engine: str = "mermaid",
         diagram_type: str = "",
+        flow_grid: FlowGrid | None = None,
     ) -> tuple[str, str]:
         """返回 (提取出的图表代码, 模型原始输出)。image 为参考图（多模态模型时）。
 
@@ -486,7 +495,10 @@ class FlowchartAgent:
             if style and not style_rules:
                 logger.info("风格插件 %s 没有 drawio:%s 规则段，使用内置默认配色",
                             style.name, diagram_type)
-            system = prompts.drawio_system_prompt(diagram_type, style_rules)
+            system = prompts.drawio_system_prompt(
+                diagram_type, style_rules,
+                node_w=flow_grid.w if flow_grid else 220,
+            )
             if not prev_code:
                 user = prompts.DRAWIO_USER.format(document=document)
                 if image:
@@ -504,7 +516,7 @@ class FlowchartAgent:
             if image:
                 messages = self._text_llm.with_images(messages, [image])
             if on_delta is not None:
-                raw = self._text_llm.chat_stream(messages, on_delta)
+                raw = self._text_llm.chat_stream(messages, on_delta, on_reasoning)
             else:
                 raw = self._text_llm.chat(messages)
             return extract_xml(raw), raw
@@ -531,7 +543,7 @@ class FlowchartAgent:
         if image:
             messages = self._text_llm.with_images(messages, [image])
         if on_delta is not None:
-            raw = self._text_llm.chat_stream(messages, on_delta)
+            raw = self._text_llm.chat_stream(messages, on_delta, on_reasoning)
         else:
             raw = self._text_llm.chat(messages)
         return extract_mermaid(raw), raw

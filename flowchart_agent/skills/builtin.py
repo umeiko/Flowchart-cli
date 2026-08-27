@@ -297,7 +297,9 @@ def build_skills(
                 "生成→渲染校验→视觉验证的循环）。仅在用户提出新图需求时调用。"
                 "若用户提供了参考图片路径，通过 image_path 传入；"
                 "若用户有风格倾向，先 list_styles 发现可用模板并经 style 传入；"
-                "若用户明确要求画布背景颜色，通过 background 传入。"
+                "若用户明确要求画布背景颜色，通过 background 传入；"
+                "若技能包或用户指定了框的尺寸/间距，通过 node_width/"
+                "node_height/gap_x/gap_y 传入（验证失败重画时也可微调它们）。"
             ),
             parameters={
                 "type": "object",
@@ -317,6 +319,22 @@ def build_skills(
                     "background": {
                         "type": "string",
                         "description": "可选：画布背景色，如 white、#1e1e1e；仅在用户明确要求时设置",
+                    },
+                    "node_width": {
+                        "type": "integer",
+                        "description": "可选：节点框宽 px（默认 220）；技能包指定框尺寸时设置",
+                    },
+                    "node_height": {
+                        "type": "integer",
+                        "description": "可选：节点框最小高 px（默认 70）；文字换行更多时全图会自动加高，不会溢出",
+                    },
+                    "gap_x": {
+                        "type": "integer",
+                        "description": "可选：同层节点水平间距 px（默认 60）",
+                    },
+                    "gap_y": {
+                        "type": "integer",
+                        "description": "可选：层间垂直间距 px（默认 60）",
                     },
                 },
                 "required": ["requirement"],
