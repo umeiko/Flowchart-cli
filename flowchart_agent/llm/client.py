@@ -48,20 +48,31 @@ def _log_response(resp, t0: float) -> None:
     )
 
 
-def _collect_stream(chunks, on_delta=None, on_tick=None) -> SimpleNamespace:
+def _collect_stream(chunks, on_delta=None, on_tick=None, on_reasoning=None, t0=None) -> SimpleNamespace:
     """把流式响应收干并拼成与非流式一致的结构（choices[0].message）。
 
     on_delta 不为 None 时，每收到一段文本增量就回调一次（用于界面实时显示）。
     on_tick 不为 None 时，每收到一段 tool_calls 参数增量就回调一次（界面
     用来估算 token 用量；正文增量由 on_delta 覆盖，此处不重复计）。
+    on_reasoning 不为 None 时，每收到一段 reasoning_content（推理模型的
+    思考流）就回调一次；思考内容不进 content，只用于界面提示与用量估算。
+    t0 为请求发出的 monotonic 时刻，用于记录首 chunk 耗时（TTFT）。
     tool_calls 条目带 model_dump()，与 openai SDK 的 pydantic 对象用法兼容。
     """
     content_parts: list[str] = []
     tool_calls: dict[int, SimpleNamespace] = {}
+    first_chunk_at: float | None = None
+    reasoning_chars = 0
     for chunk in chunks:
+        if first_chunk_at is None:
+            first_chunk_at = time.monotonic()
         if not getattr(chunk, "choices", None):
             continue
         delta = chunk.choices[0].delta
+        if getattr(delta, "reasoning_content", None):
+            reasoning_chars += len(delta.reasoning_content)
+            if on_reasoning:
+                on_reasoning(delta.reasoning_content)
         if getattr(delta, "content", None):
             content_parts.append(delta.content)
             if on_delta:
@@ -94,6 +105,11 @@ def _collect_stream(chunks, on_delta=None, on_tick=None) -> SimpleNamespace:
             },
         }
         slot.model_dump = lambda p=payload: p
+    if t0 is not None and first_chunk_at is not None:
+        logger.info(
+            "[llm] 首 chunk 耗时 %.1fs（TTFT），reasoning 共 %d 字符",
+            first_chunk_at - t0, reasoning_chars,
+        )
     message = SimpleNamespace(
         role="assistant",
         content="".join(content_parts) or None,
@@ -126,13 +142,14 @@ class LLMClient:
         _log_response(resp, t0)
         return resp
 
-    def _stream_or_fallback(self, on_delta=None, on_tick=None, **kwargs):
+    def _stream_or_fallback(self, on_delta=None, on_tick=None, on_reasoning=None, **kwargs):
         """流式请求入口：文本增量经 on_delta 实时回调，返回结构与 _completion 一致。
 
         服务商不支持流式（建连即报错）或流传输中途失败时，自动退回强制
         非流式重试；若失败前尚未吐出任何文本，把完整内容补回调一次，
         保证界面最终能看到完整结果（已吐过部分则由调用方以返回值收尾）。
         on_tick 仅用于 tool_calls 参数增量（含退回非流式后的一次性补报）。
+        on_reasoning 接收推理模型的思考流增量（仅界面提示用）。
         """
         emitted = False
 
@@ -149,6 +166,8 @@ class LLMClient:
                 stream,
                 on_delta=_track if on_delta else None,
                 on_tick=on_tick,
+                on_reasoning=on_reasoning,
+                t0=t0,
             )
             _log_response(resp, t0)
             return resp
@@ -172,10 +191,11 @@ class LLMClient:
         resp = self._completion(model=self._model.name, messages=messages)
         return resp.choices[0].message.content or ""
 
-    def chat_stream(self, messages: list[dict], on_delta) -> str:
+    def chat_stream(self, messages: list[dict], on_delta, on_reasoning=None) -> str:
         """流式纯文本对话：on_delta 收到文本增量，返回完整 assistant 内容。"""
         resp = self._stream_or_fallback(
-            on_delta=on_delta, model=self._model.name, messages=messages
+            on_delta=on_delta, on_reasoning=on_reasoning,
+            model=self._model.name, messages=messages
         )
         return resp.choices[0].message.content or ""
 
@@ -192,13 +212,14 @@ class LLMClient:
         return resp.choices[0].message
 
     def chat_with_tools_stream(self, messages: list[dict], tools: list[dict], on_delta,
-                               on_tick=None):
+                               on_tick=None, on_reasoning=None):
         """chat_with_tools 的流式版本：文本增量经 on_delta 回调，返回结构一致。
 
         on_tick 接收 tool_calls 参数增量（界面估算 token 用量用）。
+        on_reasoning 接收推理模型的思考流增量（仅界面提示用）。
         """
         resp = self._stream_or_fallback(
-            on_delta=on_delta, on_tick=on_tick,
+            on_delta=on_delta, on_tick=on_tick, on_reasoning=on_reasoning,
             model=self._model.name, messages=messages, tools=tools
         )
         return resp.choices[0].message

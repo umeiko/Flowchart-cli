@@ -1,7 +1,8 @@
 """交互式 chat REPL：与主 Agent 对话，生成并实时修改流程图。
 
 界面基于 prompt_toolkit + rich：
-- 启动横幅、Claude Code 风格的 ❯ 输入提示与底部快捷键提示栏；
+- 动态启动横幅（盲文 logo 原地逐帧重绘，首条输入即定格为静态，滚动历史不受影响）、
+  Claude Code 风格的 ❯ 输入提示与底部快捷键提示栏；
 - ↑/↓ 翻阅历史输入（跨会话持久化），历史命令幽灵提示与斜杠命令补全；
 - Ctrl+C 取消当前输入或进行中的请求，Ctrl+D 退出；
 - 拖入任意文件自动变成彩色 [文件:文件名] 芯片，Backspace 一次整块删除；
@@ -13,11 +14,13 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import signal
 import subprocess
 import sys
+import threading
 from itertools import zip_longest
 from pathlib import Path
 
@@ -36,7 +39,13 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from . import __version__
-from .banner_logo import LOGO_WIDTH, logo_lines
+from .banner_logo import (
+    LOGO_FRAMES,
+    LOGO_FRAMES_INTERVAL,
+    LOGO_FRAMES_WIDTH,
+    LOGO_WIDTH,
+    logo_lines,
+)
 from .config import Settings
 from .main_agent import MainAgent
 from .session import DiagramSession
@@ -131,6 +140,7 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
     display = _StreamDisplay(console)
     display.engine = session.engine
     session.on_delta = display.show_generation  # 生成循环的源码流式显示
+    session.on_reasoning = display.show_reasoning  # 推理模型的思考流提示
     session.on_round_start = display.reset_segment  # 每轮清空上一段，避免堆砌
     runner = _CommandRunner(console, display, yolo=yolo, cwd=output_dir)  # run_command 后端
     agent = MainAgent(
@@ -138,86 +148,94 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         on_tool_call=_show_tool_call,
         on_delta=display.show_reply,  # 主 Agent 回复流
         on_tick=display.tick,  # 工具参数增量 → token 用量估算
+        on_reasoning=display.show_reasoning,  # 思考流 → "思考中"提示
         output_root=output_dir,
         on_progress=display.set_status,  # 检查管线的路由/进度提示
         command_runner=runner,
     )
-    _print_banner(output_dir, settings, yolo=yolo, session_engine=session.engine)
+    animator = _print_banner(output_dir, settings, yolo=yolo, session_engine=session.engine)
     chips = ChipRegistry()
     prompt_session = _make_prompt_session(chips)
+    if animator is not None:
+        # 用户开始干第一个活（第一次键入/粘贴/翻历史）即定格横幅，恢复终端平静
+        prompt_session.default_buffer.on_text_changed += lambda _buf: animator.freeze()
 
-    while True:
-        try:
-            user_input = prompt_session.prompt(
-                HTML("<prompt>❯ </prompt>"), bottom_toolbar=_TOOLBAR
-            ).strip()
-        except KeyboardInterrupt:  # Ctrl+C：清空当前行，继续
-            console.print("[dim]（已取消输入）[/dim]")
-            continue
-        except EOFError:  # Ctrl+D：退出
-            console.print("[dim]再见。[/dim]")
-            return 0
+    try:
+        while True:
+            try:
+                user_input = prompt_session.prompt(
+                    HTML("<prompt>❯ </prompt>"), bottom_toolbar=_TOOLBAR
+                ).strip()
+            except KeyboardInterrupt:  # Ctrl+C：清空当前行，继续
+                console.print("[dim]（已取消输入）[/dim]")
+                continue
+            except EOFError:  # Ctrl+D：退出
+                console.print("[dim]再见。[/dim]")
+                return 0
 
-        if not user_input:
-            continue
-        if user_input in ("/exit", "/quit"):
-            console.print("[dim]再见。[/dim]")
-            return 0
-        if user_input == "/help":
-            console.print(Markdown(_HELP))
-            continue
-        if user_input == "/code":
-            code = session.current_code
-            fence = "xml" if session.engine == "drawio" else "mermaid"
-            console.print(Markdown(f"```{fence}\n{code}\n```" if code else "（还没有图）"))
-            continue
-        if user_input == "/engine" or user_input.startswith("/engine "):
-            arg = user_input[7:].strip()
-            if not arg:
-                console.print(
-                    f"当前出图引擎：[cyan]{session.engine}[/cyan]（可选：mermaid、drawio；"
-                    "切换：/engine drawio）"
+            if not user_input:
+                continue
+            if user_input in ("/exit", "/quit"):
+                console.print("[dim]再见。[/dim]")
+                return 0
+            if user_input == "/help":
+                console.print(Markdown(_HELP))
+                continue
+            if user_input == "/code":
+                code = session.current_code
+                fence = "xml" if session.engine == "drawio" else "mermaid"
+                console.print(Markdown(f"```{fence}\n{code}\n```" if code else "（还没有图）"))
+                continue
+            if user_input == "/engine" or user_input.startswith("/engine "):
+                arg = user_input[7:].strip()
+                if not arg:
+                    console.print(
+                        f"当前出图引擎：[cyan]{session.engine}[/cyan]（可选：mermaid、drawio；"
+                        "切换：/engine drawio）"
+                    )
+                else:
+                    console.print(session.set_output_engine(arg))
+                    display.engine = session.engine  # 同步流式显示的源码标签
+                continue
+            if user_input == "/path":
+                console.print(f"产物目录：[cyan]{session.output_dir.resolve()}[/cyan]")
+                continue
+            if user_input == "/yolo":
+                runner.yolo = not runner.yolo
+                state = "[red bold]已开启（命令将不再请求确认）[/red bold]" if runner.yolo \
+                    else "[green]已关闭（命令执行前需确认）[/green]"
+                console.print(f"yolo 模式：{state}")
+                logger.info("yolo 模式切换为 %s", runner.yolo)
+                continue
+
+            # 芯片 token 还原为真实路径，图片随消息发给主 Agent
+            resolved_input, images = chips.resolve(user_input)
+            if images:
+                console.print(f"[dim]已附带 {len(images)} 张图片："
+                              + "、".join(p.name for p in images) + "[/dim]")
+
+            try:
+                with display:
+                    reply = agent.chat(resolved_input, images=images or None)
+            except KeyboardInterrupt:  # Ctrl+C：打断进行中的请求，回到输入
+                console.print("[yellow]已取消本次请求。[/yellow]")
+                continue
+            except Exception as e:
+                logger.exception("chat 异常")
+                console.print(f"[red]出错了：{e}[/red]")
+                continue
+            console.print(
+                Panel(
+                    Markdown(reply),
+                    title="[bold green]助手[/bold green]",
+                    title_align="left",
+                    border_style="green",
+                    padding=(0, 1),
                 )
-            else:
-                console.print(session.set_output_engine(arg))
-                display.engine = session.engine  # 同步流式显示的源码标签
-            continue
-        if user_input == "/path":
-            console.print(f"产物目录：[cyan]{session.output_dir.resolve()}[/cyan]")
-            continue
-        if user_input == "/yolo":
-            runner.yolo = not runner.yolo
-            state = "[red bold]已开启（命令将不再请求确认）[/red bold]" if runner.yolo \
-                else "[green]已关闭（命令执行前需确认）[/green]"
-            console.print(f"yolo 模式：{state}")
-            logger.info("yolo 模式切换为 %s", runner.yolo)
-            continue
-
-        # 芯片 token 还原为真实路径，图片随消息发给主 Agent
-        resolved_input, images = chips.resolve(user_input)
-        if images:
-            console.print(f"[dim]已附带 {len(images)} 张图片："
-                          + "、".join(p.name for p in images) + "[/dim]")
-
-        try:
-            with display:
-                reply = agent.chat(resolved_input, images=images or None)
-        except KeyboardInterrupt:  # Ctrl+C：打断进行中的请求，回到输入
-            console.print("[yellow]已取消本次请求。[/yellow]")
-            continue
-        except Exception as e:
-            logger.exception("chat 异常")
-            console.print(f"[red]出错了：{e}[/red]")
-            continue
-        console.print(
-            Panel(
-                Markdown(reply),
-                title="[bold green]助手[/bold green]",
-                title_align="left",
-                border_style="green",
-                padding=(0, 1),
             )
-        )
+    finally:
+        if animator is not None:
+            animator.freeze()
 
 
 def _make_prompt_session(chips: ChipRegistry) -> PromptSession:
@@ -319,6 +337,14 @@ class _StreamDisplay:
         self.tick(delta)
         self._feed("[bold green]助手[/bold green]", "green", delta)
 
+    def show_reasoning(self, delta: str) -> None:
+        """推理模型的思考流增量：计入 token 估值，还在 spinner 阶段时
+        把文案换成"思考中"，让用户知道不是卡住，而是在等正文。"""
+        self.tick(delta)
+        if self._live is not None and not self._buf:
+            self._status_text = "思考中…"
+            self._live.update(self._spinner())
+
     def show_generation(self, delta: str) -> None:
         self.tick(delta)
         label = "drawio XML" if self.engine == "drawio" else "Mermaid"
@@ -326,8 +352,10 @@ class _StreamDisplay:
 
     def reset_segment(self, _round_no: int = 0) -> None:
         """新一轮生成开始：清空上一段（上一轮的 Mermaid 原文），
-        避免多轮生成文本在显示区里堆砌。token 计数不清零（同一任务）。"""
+        避免多轮生成文本在显示区里堆砌。token 计数不清零（同一任务）。
+        文案换成"等待模型响应"，覆盖请求发出到首个 chunk 的 TTFT 空窗。"""
         self._buf = []
+        self._status_text = "生成中，等待模型响应…"
         if self._live is not None:
             self._live.update(self._spinner())
 
@@ -473,24 +501,10 @@ class _CommandRunner:
             pass
 
 
-def _print_banner(
-    output_dir: Path, settings: Settings, yolo: bool = False, session_engine: str = ""
-) -> None:
-    """启动横幅：点阵盲文 logo（banner_logo.py）+ 右侧状态栏（markup 由 rich 渲染）。
-
-    左列 logo 全部是单宽字符（Braille Patterns），已由 logo_lines 右侧
-    补齐到 LOGO_WIDTH，直接与右列拼接；中文只出现在右列，不参与左列对齐。
-    """
+def _banner_info_lines(output_dir: Path, settings: Settings, session_engine: str) -> list[str]:
+    """横幅右列状态信息（rich markup，与 logo 逐行对齐）。"""
     vision = "已开启" if settings.text_model_vision else "未开启"
-    # 盲文（U+2800–U+28FF）不在 GBK 里：GBK 代码页的老终端打不出来，
-    # 探测当前编码，不支持就跳过图案只留文字信息，避免启动即崩
-    try:
-        "⠀".encode(sys.stdout.encoding or "utf-8")
-        mascot = logo_lines("bright_white")
-    except (UnicodeEncodeError, LookupError):
-        mascot = []
-    # 右列与 logo 逐行对齐
-    info = [
+    return [
         "",
         f"[bold bright_white]Hi, I'm Flowchart AI Agent.[/]  [bright_black]v{__version__}[/]",
         "",
@@ -501,20 +515,169 @@ def _print_banner(
         "[bright_cyan]▶[/] [bright_white]/help 查看命令 · Ctrl+D 退出[/]",
         f"[bright_black]{output_dir}[/]",
     ]
+
+
+def _compose_banner_lines(mascot: list[str], info: list[str], mascot_width: int) -> list[str]:
+    """拼接 logo 左列与信息右列。终端够宽才左右双栏；窄终端上下排列。"""
+    if mascot and console.width >= mascot_width + 66:
+        return [
+            left + ("  " + right if right else "")
+            for left, right in zip_longest(mascot, info, fillvalue="")
+        ]
+    lines = list(mascot)
+    lines.extend("  " + line for line in info if line)
+    return lines
+
+
+class _BannerAnimator:
+    """启动横幅动画：盲文 logo 逐帧原地重绘，首条输入后定格为静态横幅。
+
+    不用备用屏幕，而是用 DECSC/DECRC（\\x1b7 / \\x1b8）保存-恢复光标 +
+    上移 N 行重绘动画区，滚动缓冲区全程有效；定格后彻底停绘。
+    仅当检测到终端环境可靠（真终端、Windows 上是 Windows Terminal 一类
+    默认开 VT 的终端、行高列宽足够）才启用，否则退回静态横幅。
+    """
+
+    def __init__(self, frames: list[list[str]], final: list[str], n_lines: int):
+        self._frames = frames  # 预渲染成 ANSI 的动画帧
+        self._final = final  # 定格帧（静态 logo，行数与动画区对齐）
+        self._n = n_lines  # 动画区高度 = 光标到帧顶的行距
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._frozen = False
+        self._thread: threading.Thread | None = None
+
+    @classmethod
+    def try_create(cls, info: list[str], yolo: bool) -> "_BannerAnimator | None":
+        if not console.is_terminal:
+            return None
+        if os.name == "nt" and not (
+            os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM")
+        ):
+            return None  # 老旧 conhost：裸 ANSI 与 Win32 写屏冲突，退回静态
+        frame_markups = [
+            _compose_banner_lines(
+                [f"[bright_white]{line.ljust(LOGO_FRAMES_WIDTH)}[/]" for line in frame],
+                info,
+                LOGO_FRAMES_WIDTH,
+            )
+            for frame in LOGO_FRAMES
+        ]
+        n = len(frame_markups[0])
+        if console.height < n + 4:
+            return None
+        # 任何一行超宽都会被终端折行、破坏行距，直接放弃动画
+        for line in frame_markups[0]:
+            if Text.from_markup(line).cell_len > console.width:
+                return None
+        try:
+            frames = [cls._prerender(mk, n) for mk in frame_markups]
+        except Exception:
+            return None
+        if any(f is None for f in frames):
+            return None
+        # 定格帧：静态 logo 版本，行数不足用空行补齐，避免动画区残影
+        static_mk = _compose_banner_lines(logo_lines("bright_white"), info, LOGO_WIDTH)
+        static_mk += [""] * (n - len(static_mk))
+        try:
+            final = cls._prerender(static_mk, n)
+        except Exception:
+            return None
+        if final is None:
+            return None
+        # 首帧正常打印（进滚动历史），此后光标固定在动画区下一行
+        console.print()
+        if yolo:
+            console.print(
+                "[red bold]yolo 模式：Agent 的 shell 命令将免确认直接执行[/red bold]"
+            )
+        for line in frame_markups[0]:
+            console.print(line, soft_wrap=True)
+        console.file.flush()
+        return cls(frames, final, n)
+
+    @staticmethod
+    def _prerender(markup_lines: list[str], n: int) -> list[str] | None:
+        """把 markup 行预渲染成 ANSI 串；soft_wrap 禁折行保证行数恒定。"""
+        rec = Console(
+            record=True,
+            force_terminal=True,
+            width=console.width,
+            color_system=console.color_system or "truecolor",
+            file=io.StringIO(),  # 不碰真实 stdout，只取 export_text 的 ANSI
+            legacy_windows=False,  # 强制 ANSI 路径，避免 Win32/GBK 写屏
+        )
+        for line in markup_lines:
+            rec.print(line, soft_wrap=True)
+        lines = rec.export_text(styles=True).splitlines()
+        return lines if len(lines) == n else None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        idx = 0
+        while not self._stop.wait(LOGO_FRAMES_INTERVAL):
+            idx = (idx + 1) % len(self._frames)
+            with self._lock:
+                if self._stop.is_set():
+                    break
+                self._write(self._frames[idx])
+
+    def freeze(self) -> None:
+        """定格（幂等）：停掉动画线程，最后一绘换回经典静态横幅。"""
+        with self._lock:
+            if self._frozen:
+                return
+            self._frozen = True
+            self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        with self._lock:
+            self._write(self._final)
+
+    def _write(self, lines: list[str]) -> None:
+        buf = ["\x1b7", f"\x1b[{self._n}F"]  # 存光标 → 上移到帧顶
+        for line in lines:
+            buf.append(line)
+            buf.append("\x1b[K\r\n")  # 清行尾防残影，写到下一行首
+        buf.append("\x1b8")  # 恢复光标（prompt 行原处）
+        sys.stdout.write("".join(buf))
+        sys.stdout.flush()
+
+
+def _print_banner(
+    output_dir: Path, settings: Settings, yolo: bool = False, session_engine: str = ""
+) -> "_BannerAnimator | None":
+    """启动横幅：点阵盲文 logo（banner_logo.py）+ 右侧状态栏（markup 由 rich 渲染）。
+
+    左列 logo 全部是单宽字符（Braille Patterns），已右侧补齐到等宽，
+    直接与右列拼接；中文只出现在右列，不参与左列对齐。
+    终端环境支持时播放 logo 动画并返回 animator（由调用方在首条输入时
+    freeze）；不支持则打印静态横幅并返回 None。
+    """
+    # 盲文（U+2800–U+28FF）不在 GBK 里：GBK 代码页的老终端打不出来，
+    # 探测当前编码，不支持就跳过图案只留文字信息，避免启动即崩
+    try:
+        "⠀".encode(sys.stdout.encoding or "utf-8")
+        braille_ok = True
+    except (UnicodeEncodeError, LookupError):
+        braille_ok = False
+    info = _banner_info_lines(output_dir, settings, session_engine)
+    if braille_ok:
+        animator = _BannerAnimator.try_create(info, yolo)
+        if animator is not None:
+            animator.start()
+            return animator
+    mascot = logo_lines("bright_white") if braille_ok else []
     console.print()
-    # 终端够宽才左右双栏；窄终端 logo 与信息上下排列，避免信息栏折行错位
-    if mascot and console.width >= LOGO_WIDTH + 66:
-        for left, right in zip_longest(mascot, info, fillvalue=""):
-            console.print(left + ("  " + right if right else ""))
-    else:
-        for line in mascot:
-            console.print(line)
-        for line in info:
-            if line:
-                console.print("  " + line)
+    for line in _compose_banner_lines(mascot, info, LOGO_WIDTH):
+        console.print(line)
     console.print()
     if yolo:
         console.print(
             "[red bold]yolo 模式：Agent 的 shell 命令将免确认直接执行[/red bold]"
         )
+    return None
 
