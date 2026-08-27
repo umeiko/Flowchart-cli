@@ -137,6 +137,7 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         settings, session,
         on_tool_call=_show_tool_call,
         on_delta=display.show_reply,  # 主 Agent 回复流
+        on_tick=display.tick,  # 工具参数增量 → token 用量估算
         output_root=output_dir,
         on_progress=display.set_status,  # 检查管线的路由/进度提示
         command_runner=runner,
@@ -248,12 +249,33 @@ class _StreamDisplay:
         self._live: Live | None = None
         self._buf: list[str] = []
         self._title = ""
+        self._status_text = "助手工作中…"
+        self._tok = 0.0  # 本次任务已吐出内容的 token 粗估值（实时刷新）
         self.engine = "mermaid"  # 出图引擎（/engine 切换时同步更新流式标题）
+
+    @staticmethod
+    def _est_tokens(text: str) -> float:
+        """token 粗估：CJK 字符按 1 计，其余按 1/4 计（仅作进度参考）。"""
+        return sum(1.0 if ord(c) >= 0x2E80 else 0.25 for c in text)
+
+    def _tok_suffix(self) -> str:
+        """token 用量后缀：灰色，如 " · ≈12.3k tok"；尚未有输出时不显示。"""
+        if self._tok < 1:
+            return ""
+        v = self._tok
+        s = f"{v / 1000:.1f}k" if v >= 1000 else str(int(v))
+        return f" [dim]· ≈{s} tok[/dim]"
+
+    def _spinner(self) -> Spinner:
+        return Spinner(
+            "dots", text=f"[cyan]{self._status_text}[/cyan]{self._tok_suffix()}"
+        )
 
     def __enter__(self) -> "_StreamDisplay":
         self._buf, self._title = [], ""
+        self._status_text, self._tok = "助手工作中…", 0.0
         self._live = Live(
-            Spinner("dots", text="[cyan]助手工作中…[/cyan]"),
+            self._spinner(),
             console=self._console,
             refresh_per_second=8,
             transient=True,
@@ -276,32 +298,45 @@ class _StreamDisplay:
         """恢复实时显示区（命令执行结束后）。"""
         if self._live is None:
             self._live = Live(
-                Spinner("dots", text="[cyan]助手工作中…[/cyan]"),
+                self._spinner(),
                 console=self._console,
                 refresh_per_second=8,
                 transient=True,
             )
             self._live.start()
 
+    def tick(self, text: str) -> None:
+        """累计一段输出增量的 token 估值（工具参数等不可见增量也走这里）。
+
+        还在 spinner 阶段（无流式文本）时立即刷新文案；正文滚动阶段由
+        _feed 重建 Panel 标题顺带刷新，不重复更新。
+        """
+        self._tok += self._est_tokens(text)
+        if self._live is not None and not self._buf:
+            self._live.update(self._spinner())
+
     def show_reply(self, delta: str) -> None:
+        self.tick(delta)
         self._feed("[bold green]助手[/bold green]", "green", delta)
 
     def show_generation(self, delta: str) -> None:
+        self.tick(delta)
         label = "drawio XML" if self.engine == "drawio" else "Mermaid"
         self._feed(f"[bold cyan]生成 {label} 中…[/bold cyan]", "cyan", delta)
 
     def reset_segment(self, _round_no: int = 0) -> None:
         """新一轮生成开始：清空上一段（上一轮的 Mermaid 原文），
-        避免多轮生成文本在显示区里堆砌。"""
+        避免多轮生成文本在显示区里堆砌。token 计数不清零（同一任务）。"""
         self._buf = []
         if self._live is not None:
-            self._live.update(Spinner("dots", text="[cyan]助手工作中…[/cyan]"))
+            self._live.update(self._spinner())
 
     def set_status(self, text: str) -> None:
         """更新进度提示文案（路由结果、检查项执行进度等），仅在还没有
         流式文本输出时替换 spinner 文案，不干扰正在滚动的内容。"""
         if self._live is not None and not self._buf:
-            self._live.update(Spinner("dots", text=f"[cyan]{text}[/cyan]"))
+            self._status_text = text
+            self._live.update(self._spinner())
 
     def _feed(self, title: str, border: str, delta: str) -> None:
         if self._live is None:
@@ -313,7 +348,7 @@ class _StreamDisplay:
         self._live.update(
             Panel(
                 Text("".join(self._buf)),
-                title=title,
+                title=title + self._tok_suffix(),
                 title_align="left",
                 border_style=border,
                 padding=(0, 1),

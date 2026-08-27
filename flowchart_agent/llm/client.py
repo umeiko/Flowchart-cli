@@ -48,10 +48,12 @@ def _log_response(resp, t0: float) -> None:
     )
 
 
-def _collect_stream(chunks, on_delta=None) -> SimpleNamespace:
+def _collect_stream(chunks, on_delta=None, on_tick=None) -> SimpleNamespace:
     """把流式响应收干并拼成与非流式一致的结构（choices[0].message）。
 
     on_delta 不为 None 时，每收到一段文本增量就回调一次（用于界面实时显示）。
+    on_tick 不为 None 时，每收到一段 tool_calls 参数增量就回调一次（界面
+    用来估算 token 用量；正文增量由 on_delta 覆盖，此处不重复计）。
     tool_calls 条目带 model_dump()，与 openai SDK 的 pydantic 对象用法兼容。
     """
     content_parts: list[str] = []
@@ -80,6 +82,8 @@ def _collect_stream(chunks, on_delta=None) -> SimpleNamespace:
                     slot.function.name += tc.function.name
                 if tc.function.arguments:
                     slot.function.arguments += tc.function.arguments
+                    if on_tick:
+                        on_tick(tc.function.arguments)
     for slot in tool_calls.values():
         payload = {
             "id": slot.id,
@@ -122,12 +126,13 @@ class LLMClient:
         _log_response(resp, t0)
         return resp
 
-    def _stream_or_fallback(self, on_delta=None, **kwargs):
+    def _stream_or_fallback(self, on_delta=None, on_tick=None, **kwargs):
         """流式请求入口：文本增量经 on_delta 实时回调，返回结构与 _completion 一致。
 
         服务商不支持流式（建连即报错）或流传输中途失败时，自动退回强制
         非流式重试；若失败前尚未吐出任何文本，把完整内容补回调一次，
         保证界面最终能看到完整结果（已吐过部分则由调用方以返回值收尾）。
+        on_tick 仅用于 tool_calls 参数增量（含退回非流式后的一次性补报）。
         """
         emitted = False
 
@@ -140,16 +145,26 @@ class LLMClient:
         t0 = time.monotonic()
         try:
             stream = self._client.chat.completions.create(stream=True, **kwargs)
-            resp = _collect_stream(stream, on_delta=_track if on_delta else None)
+            resp = _collect_stream(
+                stream,
+                on_delta=_track if on_delta else None,
+                on_tick=on_tick,
+            )
             _log_response(resp, t0)
             return resp
         except Exception as e:
             logger.warning("流式请求失败，退回非流式：%s", e)
             resp = self._completion(**kwargs)
+            msg = resp.choices[0].message
             if on_delta and not emitted:
-                content = resp.choices[0].message.content
+                content = msg.content
                 if content:
                     on_delta(content)
+            if on_tick:
+                for tc in getattr(msg, "tool_calls", None) or []:
+                    args = getattr(tc.function, "arguments", None)
+                    if args:
+                        on_tick(args)
             return resp
 
     def chat(self, messages: list[dict]) -> str:
@@ -176,10 +191,15 @@ class LLMClient:
         )
         return resp.choices[0].message
 
-    def chat_with_tools_stream(self, messages: list[dict], tools: list[dict], on_delta):
-        """chat_with_tools 的流式版本：文本增量经 on_delta 回调，返回结构一致。"""
+    def chat_with_tools_stream(self, messages: list[dict], tools: list[dict], on_delta,
+                               on_tick=None):
+        """chat_with_tools 的流式版本：文本增量经 on_delta 回调，返回结构一致。
+
+        on_tick 接收 tool_calls 参数增量（界面估算 token 用量用）。
+        """
         resp = self._stream_or_fallback(
-            on_delta=on_delta, model=self._model.name, messages=messages, tools=tools
+            on_delta=on_delta, on_tick=on_tick,
+            model=self._model.name, messages=messages, tools=tools
         )
         return resp.choices[0].message
 

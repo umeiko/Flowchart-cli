@@ -109,6 +109,7 @@ class MainAgent:
         session: DiagramSession,
         on_tool_call: Callable[[str, str], None] | None = None,
         on_delta: Callable[[str], None] | None = None,
+        on_tick: Callable[[str], None] | None = None,
         output_root: Path | None = None,
         on_progress: Callable[[str], None] | None = None,
         command_runner=None,
@@ -138,6 +139,7 @@ class MainAgent:
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._on_tool_call = on_tool_call  # 界面层用来展示工具调用过程
         self._on_delta = on_delta  # 界面层用来流式显示模型输出
+        self._on_tick = on_tick  # 界面层用来估算 token 用量（工具参数增量）
 
     def chat(self, user_input: str, images: list[Path] | None = None) -> str:
         # 主模型无视觉能力时，图片路径仍随消息进入对话，由 ocr_image 提取文字
@@ -176,7 +178,8 @@ class MainAgent:
                 override = None
             if self._on_delta is not None:
                 msg = self._llm.chat_with_tools_stream(
-                    messages, self._tools, on_delta=self._on_delta
+                    messages, self._tools, on_delta=self._on_delta,
+                    on_tick=self._on_tick,
                 )
             else:
                 msg = self._llm.chat_with_tools(messages, self._tools)
