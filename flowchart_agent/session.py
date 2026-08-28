@@ -246,6 +246,12 @@ class DiagramSession:
         gap_x=None,
         gap_y=None,
     ) -> str:
+        logger.info(
+            "create_diagram 参数：requirement=%d字符 image=%s background=%s "
+            "style=%s node_width=%s node_height=%s gap_x=%s gap_y=%s",
+            len(requirement), image_path or "无", background or "无",
+            style or "无", node_width, node_height, gap_x, gap_y,
+        )
         try:
             tool_grid = make_flow_grid(
                 node_width, node_height, gap_x, gap_y, base=self._flow_grid)

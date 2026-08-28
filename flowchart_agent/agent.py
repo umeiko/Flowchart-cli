@@ -226,7 +226,7 @@ class FlowchartAgent:
             logger.info("任务开始：%s", action or "生成流程图")
             logger.info(
                 "配置：模式=%s 引擎=%s 检视=%s 风格=%s 背景=%s 最大轮次=%d "
-                "输出格式=%s 缩放=%s 宽度=%s 需求文档=%d字符",
+                "输出格式=%s 缩放=%s 宽度=%s 布局=%s 需求文档=%d字符",
                 "修订" if initial_code else "新建",
                 engine,
                 verify_mode,
@@ -236,6 +236,10 @@ class FlowchartAgent:
                 self._settings.output_format,
                 self._settings.render_scale,
                 self._settings.render_width,
+                (
+                    f"{flow_grid.w}×h{flow_grid.h} 间距{flow_grid.gap_x}/{flow_grid.gap_y}"
+                    if flow_grid else "默认220×h70 间距60/60（未读技能包/未传布局参数）"
+                ),
                 len(document),
             )
             if initial_feedback:

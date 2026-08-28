@@ -116,11 +116,15 @@ def _node_lines(value: str, width: int) -> int:
 
     字号 12 下 CJK 约 14px、其余约 7px，可用宽 = 节点宽 - 12；与
     prompts/drawio.py 的换行说明（220px ≈ 14 个汉字一行）保持一致。
+    空段（末尾/连续 <br/>、纯空白）不算行——模型手滑的尾部换行
+    不该把框加高。
     """
     usable = max(20.0, width - _TEXT_PAD)
     lines = 0
     for seg in re.split(r"(?i)<br\s*/?>", value):
-        seg = re.sub(r"<[^>]+>", "", seg)  # 其他 HTML 标记不占字宽
+        seg = re.sub(r"<[^>]+>", "", seg).strip()  # 其他 HTML 标记不占字宽
+        if not seg:
+            continue  # 空段不占行
         px = sum(14.0 if ord(c) >= 0x2E80 else 7.0 for c in seg)
         lines += max(1, math.ceil(px / usable))
     return max(1, lines)
