@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -603,13 +604,23 @@ class FlowchartAgent:
         优先级：submit_result 工具调用 → 正文 JSON（模板要求先 reason
         后 passed，强迫模型先分析再下结论）→ 纯文本 PASS/FAIL 兜底。
         不发 tool_choice="required"——不少网关直接拒绝该参数，
-        强制 + 重试会让每次检视白打两次请求。
+        强制 + 重试会让每次检视白打两次请求。端点报错明确提到工具
+        不支持时（如 vLLM 未开 --enable-auto-tool-choice），给该
+        LLMClient 打 _no_tools 标记，本会话后续检视直接走纯文本，
+        不再每轮白打一次注定失败的工具请求。
         """
+        if getattr(llm, "_no_tools", False):
+            return self._judge_content(llm.chat(messages).strip())
         try:
             msg = llm.chat_with_tools(messages, [prompts.SUBMIT_RESULT_TOOL])
         except Exception as e:
             logger.warning("submit_result 工具调用失败（%s），退回纯文本检视", e)
-            return self._judge_text(llm.chat(messages).strip())
+            if "tool" in str(e).lower():
+                llm._no_tools = True  # 端点不支持工具，本会话不再尝试
+                logger.info("该端点似乎不支持工具调用，后续检视将直接请求纯文本")
+            # 与正常路径同一条解析管线：模型可能照样吐了 JSON（比如端点
+            # 不支持 tools，但提示词的正文 JSON 模板它看得懂）
+            return self._judge_content(llm.chat(messages).strip())
         calls = getattr(msg, "tool_calls", None) or []
         if calls:
             raw_args = calls[0].function.arguments or "{}"
@@ -623,13 +634,17 @@ class FlowchartAgent:
                 return passed, issues, raw_args
         content = (msg.content or "").strip()
         if content:
-            parsed = self._judge_json(content)
-            if parsed is not None:
-                return parsed
-            logger.warning("检视响应不是 JSON，按纯文本解析")
-            return self._judge_text(content)
+            return self._judge_content(content)
         logger.warning("检视响应既无工具调用也无文本，按不通过处理")
         return False, "检视模型未给出有效结论", ""
+
+    def _judge_content(self, content: str) -> tuple[bool, str, str]:
+        """正文解析管线：JSON 优先（_judge_json），不行再纯文本 PASS/FAIL。"""
+        parsed = self._judge_json(content)
+        if parsed is not None:
+            return parsed
+        logger.warning("检视响应不是 JSON，按纯文本解析")
+        return self._judge_text(content)
 
     @staticmethod
     def _coerce_passed(value) -> bool:
@@ -641,20 +656,22 @@ class FlowchartAgent:
     @classmethod
     def _judge_json(cls, reply: str) -> "tuple[bool, str, str] | None":
         """正文 JSON 解析：模板要求 {"reason":…, "passed":…, "issues":…}
-        （reason 在前，强迫模型先分析再下结论）。容忍代码块包裹、前后杂文字，
-        以及弱模型在字符串里直接打原始换行（strict=False 放开控制字符）。"""
-        start, end = reply.find("{"), reply.rfind("}")
-        if start == -1 or end <= start:
-            return None
-        try:
-            args = json.loads(reply[start:end + 1], strict=False)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(args, dict) or "passed" not in args:
-            return None
-        passed = cls._coerce_passed(args.get("passed"))
-        issues = str(args.get("issues") or "").strip()
-        return passed, issues, reply
+        （reason 在前，强迫模型先分析再下结论）。容忍代码块包裹、泄露的
+        思维链等前后杂文字（从右往左找第一个能解析出含 passed 的对象——
+        思维链里可能有花括号，取最靠后的），以及字符串里的原始换行
+        （strict=False 放开控制字符）。"""
+        decoder = json.JSONDecoder(strict=False)
+        starts = [m.start() for m in re.finditer(r"\{", reply)]
+        for pos in reversed(starts):
+            try:
+                args, _end = decoder.raw_decode(reply[pos:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(args, dict) and "passed" in args:
+                passed = cls._coerce_passed(args.get("passed"))
+                issues = str(args.get("issues") or "").strip()
+                return passed, issues, reply
+        return None
 
     @staticmethod
     def _judge_text(reply: str) -> tuple[bool, str, str]:
