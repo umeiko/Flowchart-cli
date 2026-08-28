@@ -21,11 +21,11 @@
 适合网络受限或不想装工具链的环境（如同事机器、公司内网）。GitHub Release 提供
 开箱即用包（推送 `v*` tag 由 `.github/workflows/release.yml` 自动构建）：
 
-| 包 | 平台 |
+| 包（`vX.Y.Z` 为版本号） | 平台 |
 | --- | --- |
-| `flowchart-agent-win-x64.zip` | Windows 10/11 x64 |
-| `flowchart-agent-macos-arm64.tar.gz` | macOS Apple Silicon |
-| `flowchart-agent-macos-x64.tar.gz` | macOS Intel |
+| `flowchart-agent-win-x64-vX.Y.Z.zip` | Windows 10/11 x64 |
+| `flowchart-agent-macos-arm64-vX.Y.Z.tar.gz` | macOS Apple Silicon |
+| `flowchart-agent-macos-x64-vX.Y.Z.tar.gz` | macOS Intel |
 
 包内已含：主程序、Node 独立二进制、mermaid-cli 与语法预检依赖（`vendor/`，
 安装时已跳过 Chromium 下载）、`styles/` 与 `skills/` 模板、`.env.example`、

@@ -89,8 +89,8 @@ jobs:
         with:
           name: flowchart-agent-${{ matrix.platform }}
           path: |
-            dist/flowchart-agent-${{ matrix.platform }}.zip
-            dist/flowchart-agent-${{ matrix.platform }}.tar.gz
+            dist/flowchart-agent-${{ matrix.platform }}-v*.zip
+            dist/flowchart-agent-${{ matrix.platform }}-v*.tar.gz
           if-no-files-found: error
 
       - name: 挂到 GitHub Release（仅 tag 触发）
@@ -98,5 +98,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/flowchart-agent-${{ matrix.platform }}.zip
-            dist/flowchart-agent-${{ matrix.platform }}.tar.gz
+            dist/flowchart-agent-${{ matrix.platform }}-v*.zip
+            dist/flowchart-agent-${{ matrix.platform }}-v*.tar.gz

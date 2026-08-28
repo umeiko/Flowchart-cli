@@ -25,6 +25,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def _version() -> str:
+    """从 pyproject.toml 读项目版本号，用于产物文件名（-vX.Y.Z 后缀）。"""
+    import tomllib
+
+    with open(ROOT / "pyproject.toml", "rb") as f:
+        return tomllib.load(f)["project"]["version"]
+
 NODE_VERSION = "22.14.0"  # Node LTS，与 mermaid-cli engines（^18.19 || >=20）兼容
 MERMAID_CLI_VERSION = "11.16.0"
 
@@ -160,15 +168,15 @@ def build(platform: str, exe: Path, outdir: Path) -> Path:
     shutil.copy(ROOT / ".env.example", bundle / ".env.example")
     (bundle / "快速上手.txt").write_text(QUICKSTART, encoding="utf-8")
 
-    # 4) 归档
+    # 4) 归档（产物名带版本号：flowchart-agent-<platform>-vX.Y.Z.zip，见 pyproject）
     if archive_fmt == "zip":
-        artifact = outdir / f"{bundle.name}.zip"
+        artifact = outdir / f"{bundle.name}-v{_version()}.zip"
         with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for p in sorted(bundle.rglob("*")):
                 if p.is_file():
                     zf.write(p, p.relative_to(outdir))
     else:
-        artifact = outdir / f"{bundle.name}.tar.gz"
+        artifact = outdir / f"{bundle.name}-v{_version()}.tar.gz"
         with tarfile.open(artifact, "w:gz") as tf:
             tf.add(bundle, arcname=bundle.name)
     size_mb = artifact.stat().st_size / 1024 / 1024
