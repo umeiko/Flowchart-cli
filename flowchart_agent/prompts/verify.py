@@ -1,8 +1,43 @@
 """验证 prompt：FlowchartAgent 生成-验证循环的检视端（三档强度）。"""
 
-_VERIFY_OUTPUT_FORMAT = """输出格式（严格遵守）：
-- 全部通过：只输出一行 PASS
-- 存在问题：第一行输出 FAIL，随后每行一条具体问题（指明节点名和错误）。"""
+# 检视结论提交工具：模型用 function calling 返回判定结果与理由。
+# 注意：不强制使用（不发 tool_choice="required"）——不少网关/弱模型
+# 会拒绝强制参数或无视工具，提示词同时要求正文输出 JSON 作为平行通道，
+# 调用方一次请求内"有工具用工具、没工具解析 JSON"，不做重试。
+SUBMIT_RESULT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_result",
+        "description": "提交检视结论（代替在正文里输出 PASS/FAIL）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "passed": {
+                    "type": "boolean",
+                    "description": "true=全部通过；false=存在问题",
+                },
+                "issues": {
+                    "type": "string",
+                    "description": "passed=false 时每行一条具体问题（指明节点名和错误）；"
+                                   "passed=true 时留空或写一句简要说明",
+                },
+            },
+            "required": ["passed"],
+        },
+    },
+}
+
+# 注意：本段会被拼进要走 str.format 的 prompt（VERIFY_PROMPT/VERIFY_CODE_PROMPT），
+# JSON 示例的花括号必须写成 {{ }} 转义；VERIFY_LAYOUT_PROMPT 虽不格式化，
+# 调用方也统一过一遍无参 .format() 反转义（agent.py _verify）。
+_VERIFY_OUTPUT_FORMAT = """提交方式（严格遵守）：
+直接输出一个 JSON 对象（不要用代码块包裹，不要输出其它任何文字）：
+{{"reason": "……", "passed": true, "issues": "……"}}
+- 必须先填 reason（逐条写下你的检查过程与依据），再填 passed 和 issues——
+  先分析后下结论，不允许跳过 reason；
+- 全部通过：passed 填 true，issues 留空或写一句简要说明；
+- 存在问题：passed 填 false，issues 每行一条具体问题（指明节点名和错误）。
+如果你的平台提供了 submit_result 工具，也可以改为调用它提交（字段相同）。"""
 
 # 基础图形检视：只查排版与结构，不逐字核对内容。
 # 适用于视觉模型文字识别能力弱的场景——避免模型读错字导致永远无法通过。

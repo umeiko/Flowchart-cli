@@ -8,7 +8,12 @@
 """
 
 from .layout import apply_layout
-from .layout_flow import FlowGrid, apply_flow_layout, make_flow_grid
+from .layout_flow import (
+    FlowGrid,
+    apply_flow_layout,
+    flow_grid_from_spec,
+    make_flow_grid,
+)
 from .render import DrawioNotFoundError, check_drawio_available, render_drawio
 from .xml import apply_font, extract_xml, sanitize_xml
 
@@ -19,6 +24,7 @@ __all__ = [
     "DrawioNotFoundError",
     "FlowGrid",
     "check_drawio_available",
+    "flow_grid_from_spec",
     "make_flow_grid",
     "render_drawio",
     "extract_xml",

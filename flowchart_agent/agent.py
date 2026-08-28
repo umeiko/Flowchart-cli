@@ -6,6 +6,7 @@ drawio（LLM 出 draw.io 原生 XML → 确定性布局 → draw.io 桌面版渲
 
 from __future__ import annotations
 
+import json
 import logging
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -557,6 +558,10 @@ class FlowchartAgent:
         避免视觉模型因文字识别错误反复误判；mode=full 额外核对内容与逻辑；
         mode=code 或视觉模型未配置时，退回文本模型直接审查 Mermaid 源码
         （最兜底，查不了排版问题）。
+
+        判定结果通过 submit_result 工具（function calling）返回，避免思维链
+        泄露/寒暄导致"首行 PASS"解析失败；工具调用失败或模型不配合时退回
+        纯文本 PASS/FAIL 解析兜底。
         """
         if self._vision_llm is None:
             if mode != "code":
@@ -565,30 +570,107 @@ class FlowchartAgent:
         if mode == "code":
             logger.info("检视模式：code（文本模型 %s 审查 Mermaid 源码）",
                         self._text_llm.model_name)
-            reply = self._text_llm.chat(
-                [
-                    {
-                        "role": "user",
-                        "content": prompts.VERIFY_CODE_PROMPT.format(
-                            document=document, code=code
-                        ),
-                    }
-                ]
-            ).strip()
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompts.VERIFY_CODE_PROMPT.format(
+                        document=document, code=code
+                    ),
+                }
+            ]
+            passed, issues, reply = self._judge(self._text_llm, messages)
         else:
             if mode == "layout":
-                prompt = prompts.VERIFY_LAYOUT_PROMPT
+                # 无参 .format()：模板里的 JSON 示例是 {{}} 转义写法，
+                # 三个检视 prompt 统一过一次 format 还原成单花括号
+                prompt = prompts.VERIFY_LAYOUT_PROMPT.format()
                 logger.info("检视模式：layout（视觉模型 %s 仅做基础图形检视）",
                             self._vision_llm.model_name)
             else:
                 prompt = prompts.VERIFY_PROMPT.format(document=document)
                 logger.info("检视模式：full（视觉模型 %s 完整检视）",
                             self._vision_llm.model_name)
-            reply = self._vision_llm.chat_with_image(prompt, image_path).strip()
-        verdict = "PASS" if reply.upper().startswith("PASS") else "FAIL"
-        logger.info("检视结论：%s（回复 %d 字符）", verdict, len(reply))
-        if verdict == "PASS":
+            messages = LLMClient.with_images(
+                [{"role": "user", "content": prompt}], [image_path])
+            passed, issues, reply = self._judge(self._vision_llm, messages)
+        verdict = "PASS" if passed else "FAIL"
+        logger.info("检视结论：%s（理由 %d 字符）", verdict, len(issues or reply))
+        return passed, issues, reply
+
+    def _judge(self, llm: LLMClient, messages: list[dict]) -> tuple[bool, str, str]:
+        """一次请求拿检视结论：工具与正文 JSON 是平行通道，不强制、不重试。
+
+        优先级：submit_result 工具调用 → 正文 JSON（模板要求先 reason
+        后 passed，强迫模型先分析再下结论）→ 纯文本 PASS/FAIL 兜底。
+        不发 tool_choice="required"——不少网关直接拒绝该参数，
+        强制 + 重试会让每次检视白打两次请求。
+        """
+        try:
+            msg = llm.chat_with_tools(messages, [prompts.SUBMIT_RESULT_TOOL])
+        except Exception as e:
+            logger.warning("submit_result 工具调用失败（%s），退回纯文本检视", e)
+            return self._judge_text(llm.chat(messages).strip())
+        calls = getattr(msg, "tool_calls", None) or []
+        if calls:
+            raw_args = calls[0].function.arguments or "{}"
+            try:
+                args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                logger.warning("submit_result 参数不是合法 JSON：%s", raw_args[:100])
+            else:
+                passed = self._coerce_passed(args.get("passed"))
+                issues = str(args.get("issues") or "").strip()
+                return passed, issues, raw_args
+        content = (msg.content or "").strip()
+        if content:
+            parsed = self._judge_json(content)
+            if parsed is not None:
+                return parsed
+            logger.warning("检视响应不是 JSON，按纯文本解析")
+            return self._judge_text(content)
+        logger.warning("检视响应既无工具调用也无文本，按不通过处理")
+        return False, "检视模型未给出有效结论", ""
+
+    @staticmethod
+    def _coerce_passed(value) -> bool:
+        """passed 字段宽松取值：弱模型/网关有时吐字符串 "true"/"false"。"""
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "pass")
+
+    @classmethod
+    def _judge_json(cls, reply: str) -> "tuple[bool, str, str] | None":
+        """正文 JSON 解析：模板要求 {"reason":…, "passed":…, "issues":…}
+        （reason 在前，强迫模型先分析再下结论）。容忍代码块包裹、前后杂文字，
+        以及弱模型在字符串里直接打原始换行（strict=False 放开控制字符）。"""
+        start, end = reply.find("{"), reply.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            args = json.loads(reply[start:end + 1], strict=False)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(args, dict) or "passed" not in args:
+            return None
+        passed = cls._coerce_passed(args.get("passed"))
+        issues = str(args.get("issues") or "").strip()
+        return passed, issues, reply
+
+    @staticmethod
+    def _judge_text(reply: str) -> tuple[bool, str, str]:
+        """纯文本兜底解析：首行 PASS 通过；判定标志被思维链/寒暄挤到后面时，
+        找最后一个独占一行的 PASS/FAIL（FAIL 之后的行作为问题列表）。"""
+        lines = [l for l in reply.splitlines() if l.strip()]
+        if not lines:
+            return False, reply, reply
+        if lines[0].upper().startswith("PASS"):
             return True, "", reply
-        # FAIL：去掉首行标志，保留问题列表
-        lines = [l for l in reply.splitlines() if l.strip() and not l.strip().upper() == "FAIL"]
+        for idx in range(len(lines) - 1, -1, -1):
+            u = lines[idx].strip().upper()
+            if u == "PASS":
+                return True, "", reply
+            if u == "FAIL":
+                issues = "\n".join(lines[idx + 1:]).strip()
+                return False, issues or reply, reply
+        lines = [l for l in lines if l.strip().upper() != "FAIL"]
         return False, "\n".join(lines) or reply, reply

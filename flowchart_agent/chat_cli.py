@@ -31,7 +31,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.shortcuts import choice
 from prompt_toolkit.styles import Style as PtStyle
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -269,6 +269,7 @@ class _StreamDisplay:
         self._title = ""
         self._status_text = "助手工作中…"
         self._tok = 0.0  # 本次任务已吐出内容的 token 粗估值（实时刷新）
+        self._reason_buf = ""  # 思维链滚动缓冲（只留尾部，灰色单行展示）
         self.engine = "mermaid"  # 出图引擎（/engine 切换时同步更新流式标题）
 
     @staticmethod
@@ -289,9 +290,26 @@ class _StreamDisplay:
             "dots", text=f"[cyan]{self._status_text}[/cyan]{self._tok_suffix()}"
         )
 
+    def _reason_tail(self) -> str:
+        """思维链最新一行（灰色单行展示用）：超长时滚动截断尾部。"""
+        if not self._reason_buf:
+            return ""
+        parts = [l.strip() for l in self._reason_buf.splitlines() if l.strip()]
+        line = parts[-1] if parts else ""
+        width = max(20, self._console.width - 6)
+        return ("…" + line[-width:]) if len(line) > width else line
+
+    def _wait_view(self):
+        """等待阶段的 Live 内容：spinner + 灰色思维链尾行（无思考流时仅 spinner）。"""
+        tail = self._reason_tail()
+        if not tail:
+            return self._spinner()
+        return Group(self._spinner(), Text(tail, style="dim"))
+
     def __enter__(self) -> "_StreamDisplay":
         self._buf, self._title = [], ""
         self._status_text, self._tok = "助手工作中…", 0.0
+        self._reason_buf = ""
         self._live = Live(
             self._spinner(),
             console=self._console,
@@ -331,19 +349,21 @@ class _StreamDisplay:
         """
         self._tok += self._est_tokens(text)
         if self._live is not None and not self._buf:
-            self._live.update(self._spinner())
+            self._live.update(self._wait_view())
 
     def show_reply(self, delta: str) -> None:
         self.tick(delta)
         self._feed("[bold green]助手[/bold green]", "green", delta)
 
     def show_reasoning(self, delta: str) -> None:
-        """推理模型的思考流增量：计入 token 估值，还在 spinner 阶段时
-        把文案换成"思考中"，让用户知道不是卡住，而是在等正文。"""
+        """推理模型的思考流增量：计入 token 估值，spinner 阶段把文案换成
+        "思考中"，并把思维链最新一行以灰色单行实时滚动展示（opencode 风格，
+        让用户等待时有东西可看）。"""
+        self._reason_buf = (self._reason_buf + delta)[-800:]
         self.tick(delta)
         if self._live is not None and not self._buf:
             self._status_text = "思考中…"
-            self._live.update(self._spinner())
+            self._live.update(self._wait_view())
 
     def show_generation(self, delta: str) -> None:
         self.tick(delta)
@@ -355,16 +375,17 @@ class _StreamDisplay:
         避免多轮生成文本在显示区里堆砌。token 计数不清零（同一任务）。
         文案换成"等待模型响应"，覆盖请求发出到首个 chunk 的 TTFT 空窗。"""
         self._buf = []
+        self._reason_buf = ""
         self._status_text = "生成中，等待模型响应…"
         if self._live is not None:
-            self._live.update(self._spinner())
+            self._live.update(self._wait_view())
 
     def set_status(self, text: str) -> None:
         """更新进度提示文案（路由结果、检查项执行进度等），仅在还没有
         流式文本输出时替换 spinner 文案，不干扰正在滚动的内容。"""
         if self._live is not None and not self._buf:
             self._status_text = text
-            self._live.update(self._spinner())
+            self._live.update(self._wait_view())
 
     def _feed(self, title: str, border: str, delta: str) -> None:
         if self._live is None:
@@ -501,8 +522,12 @@ class _CommandRunner:
             pass
 
 
-def _banner_info_lines(output_dir: Path, settings: Settings, session_engine: str) -> list[str]:
-    """横幅右列状态信息（rich markup，与 logo 逐行对齐）。"""
+def _banner_info_lines(settings: Settings, session_engine: str) -> list[str]:
+    """横幅右列状态信息（rich markup，与 logo 逐行对齐）。
+
+    输出目录路径不在此列——它长度不可控，放右列容易折行打乱横幅行距，
+    由 _print_banner 单独放在横幅正下方独占一行。
+    """
     vision = "已开启" if settings.text_model_vision else "未开启"
     return [
         "",
@@ -513,7 +538,6 @@ def _banner_info_lines(output_dir: Path, settings: Settings, session_engine: str
         f"[bright_cyan]▶[/] [bright_white]出图引擎 {session_engine}（/engine 切换） · "
         f"主模型图像输入 {vision}[/]",
         "[bright_cyan]▶[/] [bright_white]/help 查看命令 · Ctrl+D 退出[/]",
-        f"[bright_black]{output_dir}[/]",
     ]
 
 
@@ -529,13 +553,40 @@ def _compose_banner_lines(mascot: list[str], info: list[str], mascot_width: int)
     return lines
 
 
+def _enable_vt_mode() -> bool:
+    """确保当前控制台能解析 ANSI/VT 转义序列，返回是否可以安全使用裸 ANSI。
+
+    非 Windows、或 Windows Terminal 一类默认开 VT 的终端直接可用；
+    Win10+ 的 conhost 支持 VT 但默认关闭（双击启动的默认控制台即此情况），
+    用 SetConsoleMode 主动打开 ENABLE_VIRTUAL_TERMINAL_PROCESSING；
+    开不了（更老的系统/控制台）返回 False，调用方退回静态横幅。
+    """
+    if os.name != "nt":
+        return True
+    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM"):
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & 0x4:  # ENABLE_VIRTUAL_TERMINAL_PROCESSING 已开
+            return True
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x4))
+    except Exception:
+        return False
+
+
 class _BannerAnimator:
     """启动横幅动画：盲文 logo 逐帧原地重绘，首条输入后定格为静态横幅。
 
     不用备用屏幕，而是用 DECSC/DECRC（\\x1b7 / \\x1b8）保存-恢复光标 +
     上移 N 行重绘动画区，滚动缓冲区全程有效；定格后彻底停绘。
-    仅当检测到终端环境可靠（真终端、Windows 上是 Windows Terminal 一类
-    默认开 VT 的终端、行高列宽足够）才启用，否则退回静态横幅。
+    仅当终端环境可靠（真终端、VT 可用——Windows 上会先尝试用
+    SetConsoleMode 主动打开、行高列宽足够）才启用，否则退回静态横幅。
     """
 
     def __init__(self, frames: list[list[str]], final: list[str], n_lines: int):
@@ -548,13 +599,11 @@ class _BannerAnimator:
         self._thread: threading.Thread | None = None
 
     @classmethod
-    def try_create(cls, info: list[str], yolo: bool) -> "_BannerAnimator | None":
+    def try_create(cls, info: list[str], yolo: bool, footer: str = "") -> "_BannerAnimator | None":
         if not console.is_terminal:
             return None
-        if os.name == "nt" and not (
-            os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM")
-        ):
-            return None  # 老旧 conhost：裸 ANSI 与 Win32 写屏冲突，退回静态
+        if not _enable_vt_mode():
+            return None  # 开不了 VT 的老控制台：裸 ANSI 会写出乱码，退回静态
         frame_markups = [
             _compose_banner_lines(
                 [f"[bright_white]{line.ljust(LOGO_FRAMES_WIDTH)}[/]" for line in frame],
@@ -593,8 +642,13 @@ class _BannerAnimator:
             )
         for line in frame_markups[0]:
             console.print(line, soft_wrap=True)
+        n_lines = n
+        if footer:
+            # 页脚（输出目录路径）在动画区下方独占一行，光标随之再下移一行
+            console.print(footer, soft_wrap=True)
+            n_lines += 1
         console.file.flush()
-        return cls(frames, final, n)
+        return cls(frames, final, n_lines)
 
     @staticmethod
     def _prerender(markup_lines: list[str], n: int) -> list[str] | None:
@@ -664,9 +718,11 @@ def _print_banner(
         braille_ok = True
     except (UnicodeEncodeError, LookupError):
         braille_ok = False
-    info = _banner_info_lines(output_dir, settings, session_engine)
+    info = _banner_info_lines(settings, session_engine)
+    # 输出目录路径长度不可控，放右列容易折行打乱行距，统一在横幅正下方独占一行
+    footer = f"[bright_black]{output_dir}[/]"
     if braille_ok:
-        animator = _BannerAnimator.try_create(info, yolo)
+        animator = _BannerAnimator.try_create(info, yolo, footer=footer)
         if animator is not None:
             animator.start()
             return animator
@@ -674,6 +730,7 @@ def _print_banner(
     console.print()
     for line in _compose_banner_lines(mascot, info, LOGO_WIDTH):
         console.print(line)
+    console.print(footer)
     console.print()
     if yolo:
         console.print(

@@ -5,8 +5,8 @@ drawio 引擎画流程图时，LLM 只输出结构（节点 + 带 source/target 
 - 分层：从入度为 0 的起点做最长路分层（自上而下，一层一行）；
 - 层内排序：barycenter 启发式（两遍向下 + 一遍向上），平局保持 XML 书写
   顺序——判断节点先写的分支排左、后写的排右；
-- 坐标：同行节点等大（宽×高见 FlowGrid，可由 apply_flow_layout
-  的 grid 参数覆盖；高度按节点文字换行数自适应、全图统一取最高值，
+- 坐标：节点同宽（宽度与最小高见 FlowGrid，可由 apply_flow_layout
+  的 grid 参数覆盖；每个节点的高度按自身文字换行数自适应，
   菱形再高 diamond_ratio 倍），每层水平居中于最宽层；「结束/终止/End」
   类无出边终节点强制沉底（最末层被流程步骤占用时独占新起一行）；
 - 连线：强制规范化为直角正交走线（orthogonalEdgeStyle;rounded=0），
@@ -46,8 +46,8 @@ class FlowGrid:
     """流程图网格参数：节点宽/最小高与间距。
 
     apply_flow_layout 可按需覆盖（如技能包指定 172px 宽）；h 是最小
-    高度——实际高度按节点文字换行数自适应（全图统一取最高值，保持
-    严格等大），写死会在文字折行时溢出。
+    高度——每个节点按自身文字折行数自适应加高（一行就是 h，两行才
+    加高，互不牵连），写死会在文字折行时溢出。
     """
 
     w: int = 220       # 节点宽
@@ -67,10 +67,12 @@ _H_PAD = 10    # 节点内上下留白合计
 
 
 def make_flow_grid(
-    node_width=None, node_height=None, gap_x=None, gap_y=None
+    node_width=None, node_height=None, gap_x=None, gap_y=None, base=None
 ) -> FlowGrid | None:
-    """把工具层的可选布局参数汇成 FlowGrid；全为 None 返回 None（用默认）。
+    """把工具层的可选布局参数汇成 FlowGrid；全为 None 返回 None（沿用现状）。
 
+    base 是合并底版（缺省用内置默认网格）：技能包布局已在会话生效时，
+    工具显式传参应在其基础上微调，而不是把其余维度重置回默认值。
     非法值（非数字、非正数）抛 ValueError，由工具层拦回给模型修正。
     """
     vals = {"w": node_width, "h": node_height, "gap_x": gap_x, "gap_y": gap_y}
@@ -80,7 +82,33 @@ def make_flow_grid(
     for k, v in vals.items():
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
             raise ValueError(f"布局参数 {k} 必须是正数，收到 {v!r}")
-    return replace(_DEFAULT_GRID, **{k: int(v) for k, v in vals.items()})
+    return replace(base or _DEFAULT_GRID, **{k: int(v) for k, v in vals.items()})
+
+
+def flow_grid_from_spec(spec: str) -> FlowGrid:
+    """解析技能包 frontmatter 的 layout 串，如 "node_width=172,gap_y=28"。
+
+    键限定 node_width/node_height/gap_x/gap_y；非法键/值抛 ValueError。
+    """
+    vals: dict[str, float] = {}
+    for part in spec.split(","):
+        if not part.strip():
+            continue
+        key, sep, value = part.partition("=")
+        key = key.strip()
+        if key not in ("node_width", "node_height", "gap_x", "gap_y") \
+                or not sep or not value.strip():
+            raise ValueError(
+                f"layout 条目 {part!r} 非法，应为 node_width=/node_height=/"
+                f"gap_x=/gap_y=数字，逗号分隔")
+        try:
+            vals[key] = float(value.strip())
+        except ValueError:
+            raise ValueError(f"layout 条目 {part!r} 的值不是数字") from None
+    grid = make_flow_grid(**vals)
+    if grid is None:
+        raise ValueError("layout 串为空")
+    return grid
 
 
 def _node_lines(value: str, width: int) -> int:
@@ -98,13 +126,14 @@ def _node_lines(value: str, width: int) -> int:
     return max(1, lines)
 
 
-def _auto_height(vertices: list[ET.Element], grid: FlowGrid) -> FlowGrid:
-    """高度跟随换行：全图统一高度 = max(最小高, 最高节点所需)。"""
-    need = max(
-        (_node_lines(c.get("value") or "", grid.w) for c in vertices),
-        default=1,
-    ) * _LINE_H + _H_PAD
-    return grid if need <= grid.h else replace(grid, h=need)
+def _node_height(cell: ET.Element, grid: FlowGrid) -> int:
+    """单个节点的高度：按自身文字折行数取 max(最小高, 行数×行高+留白)。
+
+    一行的节点就是 grid.h（如技能规定的 28），两行的才 46——互不牵连，
+    不做全图统一（单个多行节点不该把"开始"这种两字框一起抬成矮胖）。
+    """
+    need = _node_lines(cell.get("value") or "", grid.w) * _LINE_H + _H_PAD
+    return max(grid.h, need)
 
 _EDGE_STYLE = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#666666;"
 
@@ -873,13 +902,15 @@ def _prepare(xml_text: str, router_cls: type["_Router"] | None = None,
     layers_of = _assign_layers(ids, preds, succs, order)
     _sink_terminals_to_bottom(vertices, succs, layers_of)
     layered = _order_layers(ids, layers_of, preds, succs, order)
-    grid = _auto_height(vertices, grid or _DEFAULT_GRID)
+    grid = grid or _DEFAULT_GRID
     decisions = {c.get("id") for c in vertices if "rhombus" in (c.get("style") or "")}
-    # 菱形比普通框高 diamond_ratio 倍：菱形内接文字区小，同高会太矮贴腰
-    heights = {
-        i: round(grid.h * grid.diamond_ratio) if i in decisions else grid.h
-        for i in ids
-    }
+    # 每节点按自身文字行数定高（最小 grid.h）；菱形比普通框高 diamond_ratio
+    # 倍：菱形内接文字区小，同高会太矮贴腰
+    heights = {}
+    for c in vertices:
+        i = c.get("id")
+        h = _node_height(c, grid)
+        heights[i] = round(h * grid.diamond_ratio) if i in decisions else h
     pos = _positions(layered, grid, heights)
 
     router = (router_cls or _Router)(pos, decisions, grid, heights)
@@ -974,7 +1005,7 @@ def _order_layers(
 
 def _positions(layered: list[list[str]], grid: FlowGrid = _DEFAULT_GRID,
                heights: dict[str, int] | None = None) -> dict[str, tuple[float, float]]:
-    """每层水平居中于最宽层。同行节点等大，行高取行内最高节点（菱形更高），
+    """每层水平居中于最宽层。节点同宽、顶对齐，行高取行内最高节点，
     层间间距固定 gap_y。"""
     max_w = max(len(lv) * grid.w + (len(lv) - 1) * grid.gap_x for lv in layered)
     pos: dict[str, tuple[float, float]] = {}

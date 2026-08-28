@@ -19,6 +19,7 @@ from .generate import (
     RENDER_ERROR_FEEDBACK,
 )
 from .verify import (
+    SUBMIT_RESULT_TOOL,
     VERIFY_PROMPT,
     VERIFY_LAYOUT_PROMPT,
     VERIFY_CODE_PROMPT,
@@ -43,6 +44,7 @@ __all__ = [
     "VERIFY_PROMPT",
     "VERIFY_LAYOUT_PROMPT",
     "VERIFY_CODE_PROMPT",
+    "SUBMIT_RESULT_TOOL",
     "STYLE_GENERATE_SYSTEM",
     "STYLE_GENERATE_USER",
     "STYLE_REVISE_USER",

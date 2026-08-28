@@ -9,7 +9,12 @@ from typing import Callable
 
 from .agent import FlowchartAgent
 from .config import Settings
-from .drawio import check_drawio_available, make_flow_grid, render_drawio
+from .drawio import (
+    check_drawio_available,
+    flow_grid_from_spec,
+    make_flow_grid,
+    render_drawio,
+)
 from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
@@ -43,6 +48,9 @@ class DiagramSession:
         # drawio 流程图的节点尺寸/间距覆盖（create_diagram 的可选布局参数，
         # FlowGrid；None = 默认 220×70/间距 60），修改图时沿用
         self._flow_grid = None
+        # 已读技能包的 prompt_hint（技能名 → 要求文本），create/modify 时
+        # 注入需求文本直通生成子模型
+        self._skill_hints: dict[str, str] = {}
         # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
         self.on_delta: Callable[[str], None] | None = None
         # 界面层的思考流回调（推理模型 reasoning_content，仅提示用）；None = 不需要
@@ -126,14 +134,37 @@ class DiagramSession:
         )
 
     def use_skill(self, name: str) -> str:
-        """读取技能包完整指引（use_skill 工具的 handler）。"""
+        """读取技能包完整指引（use_skill 工具的 handler）。
+
+        技能包 frontmatter 带 layout 时（如 node_width=172,gap_y=28），
+        此处直接解析存进会话布局（后续 create/modify 自动沿用）——
+        在"读技能"这一刻确定性生效，不靠模型长上下文记住传参。
+        """
         try:
             pack = get_skill_pack(name)
         except ValueError as e:
             return f"错误：{e}"
+        note = ""
+        if pack.prompt_hint:
+            self._skill_hints[pack.name] = pack.prompt_hint
+            note += (
+                f"\n\n（该技能的作图要求已直通生成模型：{pack.prompt_hint}）"
+            )
+        if pack.layout:
+            try:
+                self._flow_grid = flow_grid_from_spec(pack.layout)
+                logger.info("技能包 %s 布局参数已生效：%s", pack.name, pack.layout)
+                note = (
+                    f"\n\n（该技能的布局参数已自动生效：{pack.layout}，"
+                    "后续 create_diagram/modify_diagram 会自动沿用，"
+                    "无需再传 node_width 等参数。）"
+                )
+            except ValueError as e:
+                logger.warning("技能包 %s 的 layout 串非法：%s", pack.name, e)
+                note = f"\n\n（警告：该技能的 layout 配置非法已忽略：{e}）"
         return (
             f"以下是技能包 {pack.name} 的操作指引，请严格遵照执行：\n\n"
-            f"{pack.instructions}"
+            f"{pack.instructions}{note}"
         )
 
     def create_style(self, name: str, description: str) -> str:
@@ -216,9 +247,14 @@ class DiagramSession:
         gap_y=None,
     ) -> str:
         try:
-            self._flow_grid = make_flow_grid(node_width, node_height, gap_x, gap_y)
+            tool_grid = make_flow_grid(
+                node_width, node_height, gap_x, gap_y, base=self._flow_grid)
         except ValueError as e:
             return f"错误：{e}"
+        # 仅当模型显式传了布局参数才覆盖：在现有网格（可能是技能包
+        # frontmatter 生效的）上微调；不传则原样沿用，绝不能重置回默认
+        if tool_grid is not None:
+            self._flow_grid = tool_grid
         self.requirement = requirement
         reference = None
         if image_path:
@@ -239,12 +275,28 @@ class DiagramSession:
         if background:
             self._background_override = background
             self.requirement += f"\n\n（画布背景色要求：{background}）"
+        self._inject_skill_hints()
         return self._run(initial_code="", initial_feedback="", reference_image=reference)
+
+    def _inject_skill_hints(self) -> None:
+        """把已读技能包的 prompt_hint 注入需求文本（直通生成子模型）。
+
+        技能正文只有主 Agent 可见，子模型只认 requirement；长上下文下靠
+        主 Agent 抄录不可靠，故在 use_skill 时收集、此处确定性注入。
+        requirement 跨轮次累积，已注入过的（按文本去重）不重复追加。
+        """
+        hints = [
+            h for h in self._skill_hints.values()
+            if h and h not in self.requirement
+        ]
+        if hints:
+            self.requirement += "\n\n（附加作图要求：" + "；".join(hints) + "）"
 
     def modify(self, instruction: str) -> str:
         if not self.has_diagram:
             return "还没有生成过流程图，请先描述需求创建一张图。"
         self.requirement += f"\n\n追加修改要求：{instruction}"
+        self._inject_skill_hints()  # 技能可能在首图之后才读，修改时同样注入
         # 修订时把当前渲染图作为参考，让多模态生成模型"看到"要改什么
         return self._run(
             initial_code=self.current_code,

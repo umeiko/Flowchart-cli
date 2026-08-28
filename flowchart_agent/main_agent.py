@@ -226,12 +226,21 @@ class MainAgent:
 
     @staticmethod
     def _assistant_message_dict(msg) -> dict:
-        """只保留继续对话所需的字段，剔除 reasoning_content 等扩展字段。"""
-        return {
+        """只保留继续对话所需的字段（content + tool_calls）。
+
+        reasoning_content 是个例外：思考模式 + tool_calls 的网关（如
+        deepseek）要求历史消息原样回传思考内容，否则下一轮请求 400——
+        响应里带了的就带回去，没带的（别家网关）不加这个字段。
+        """
+        d = {
             "role": "assistant",
             "content": msg.content or "",
             "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
         }
+        reasoning = getattr(msg, "reasoning_content", None)
+        if reasoning:
+            d["reasoning_content"] = reasoning
+        return d
 
     def _execute(self, name: str, arguments_json: str) -> str:
         skill = self._skills.get(name)

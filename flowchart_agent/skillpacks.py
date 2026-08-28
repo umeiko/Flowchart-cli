@@ -1,7 +1,8 @@
 """技能包系统：skills/ 目录下的 markdown 文件即"提示词型"技能插件。
 
-与风格插件（styles.py）同构：frontmatter 声明 name/description，正文是
-写给主 Agent 的操作手册。主 Agent 用 list_skill_packs 发现、use_skill 读取
+与风格插件（styles.py）同构：frontmatter 声明 name/description（可选 layout
+声明 drawio 流程图布局参数、可选 prompt_hint 声明直通生成子模型的作图
+要求，均于 use_skill 时确定性生效），正文是写给主 Agent 的操作手册。主 Agent 用 list_skill_packs 发现、use_skill 读取
 正文后按指引执行（配合 read_document / find_files / 流程图工具完成）。
 适合接入社区流传的 SKILL.md 式技能包；需要执行脚本的技能不在本系统范围内。
 目录可用 FLOWCHART_SKILL_DIR 环境变量覆盖；默认 ./skills（冻结时为 exe 旁 skills/）。
@@ -21,6 +22,13 @@ class SkillPack:
     name: str
     description: str  # 一句话说明 + 触发场景，主 Agent 据此决定是否选用
     instructions: str  # markdown 正文：use_skill 时注入给主 Agent 的操作指引
+    # frontmatter 可选 layout 串（如 "node_width=172,gap_y=28"）：
+    # use_skill 时确定性应用到会话布局，模型无需记忆传参
+    layout: str = ""
+    # frontmatter 可选 prompt_hint：直通生成子模型的要求（语言/内容规范等），
+    # use_skill 时存进会话，create/modify 时注入需求文本——技能正文只有
+    # 主 Agent 可见，子模型只认 requirement，长上下文下抄录不可靠
+    prompt_hint: str = ""
 
 
 def skill_packs_dir() -> Path:
@@ -74,4 +82,6 @@ def _parse_pack_file(path: Path) -> SkillPack | None:
         name=meta["name"].lower(),
         description=meta["description"],
         instructions=parts[2].strip(),
+        layout=meta.get("layout", ""),
+        prompt_hint=meta.get("prompt_hint", ""),
     )

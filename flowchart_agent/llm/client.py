@@ -55,11 +55,14 @@ def _collect_stream(chunks, on_delta=None, on_tick=None, on_reasoning=None, t0=N
     on_tick 不为 None 时，每收到一段 tool_calls 参数增量就回调一次（界面
     用来估算 token 用量；正文增量由 on_delta 覆盖，此处不重复计）。
     on_reasoning 不为 None 时，每收到一段 reasoning_content（推理模型的
-    思考流）就回调一次；思考内容不进 content，只用于界面提示与用量估算。
+    思考流）就回调一次；思考内容同时收齐挂在返回消息的
+    reasoning_content 上（思考模式 + tool_calls 的网关要求历史消息回传），
+    并用于界面提示与用量估算。
     t0 为请求发出的 monotonic 时刻，用于记录首 chunk 耗时（TTFT）。
     tool_calls 条目带 model_dump()，与 openai SDK 的 pydantic 对象用法兼容。
     """
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_calls: dict[int, SimpleNamespace] = {}
     first_chunk_at: float | None = None
     reasoning_chars = 0
@@ -70,6 +73,7 @@ def _collect_stream(chunks, on_delta=None, on_tick=None, on_reasoning=None, t0=N
             continue
         delta = chunk.choices[0].delta
         if getattr(delta, "reasoning_content", None):
+            reasoning_parts.append(delta.reasoning_content)
             reasoning_chars += len(delta.reasoning_content)
             if on_reasoning:
                 on_reasoning(delta.reasoning_content)
@@ -114,6 +118,9 @@ def _collect_stream(chunks, on_delta=None, on_tick=None, on_reasoning=None, t0=N
         role="assistant",
         content="".join(content_parts) or None,
         tool_calls=list(tool_calls.values()) or None,
+        # 思考模式 + tool_calls 的网关（如 deepseek）要求历史消息原样回传
+        # reasoning_content，否则下一轮请求 400；此处收齐供调用方带回去
+        reasoning_content="".join(reasoning_parts) or None,
     )
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
@@ -199,16 +206,17 @@ class LLMClient:
         )
         return resp.choices[0].message.content or ""
 
-    def chat_with_tools(self, messages: list[dict], tools: list[dict]):
+    def chat_with_tools(self, messages: list[dict], tools: list[dict],
+                        tool_choice=None):
         """带 function calling 的对话，返回完整的 assistant message 对象。
 
         调用方需检查 message.tool_calls 决定是否执行工具并继续对话。
+        tool_choice：强制工具调用（如 "required"），None 由服务端默认。
         """
-        resp = self._completion(
-            model=self._model.name,
-            messages=messages,
-            tools=tools,
-        )
+        kwargs = dict(model=self._model.name, messages=messages, tools=tools)
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        resp = self._completion(**kwargs)
         return resp.choices[0].message
 
     def chat_with_tools_stream(self, messages: list[dict], tools: list[dict], on_delta,
