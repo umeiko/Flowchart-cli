@@ -68,6 +68,11 @@ def _parse_pack_file(path: Path) -> SkillPack | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    return parse_skill_pack_text(text)
+
+
+def parse_skill_pack_text(text: str) -> SkillPack | None:
+    """解析一个技能文档；缺少合法 frontmatter 时返回 None。"""
     parts = text.split("---", 2)
     if len(parts) < 3 or parts[0].strip():
         return None

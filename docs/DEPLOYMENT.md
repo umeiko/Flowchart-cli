@@ -1,6 +1,6 @@
 # 部署指南
 
-版本：v1.0.0
+版本：v1.5.0
 适用：flowchart-ai 1.x
 
 ## 1. 运行时依赖总览
@@ -14,7 +14,9 @@
 | 项目本地 npm 依赖 | mermaid + jsdom | 语法预检 | 可（随仓库或离线包） |
 | 模型 API | OpenAI 兼容端点 | 生成/验证 | **硬网络需求** |
 
-软件本体是 CLI 工具，无常驻进程、无数据库、无端口占用。
+软件支持 TUI、单文档批处理和 Web/API 服务三种运行方式。只有 `server` 模式是常驻进程，
+默认监听 `127.0.0.1:8765`，并在 `<SERVER_OUTPUT>/server/flowchart.db` 使用 SQLite
+保存用户、登录令牌、Session 元数据、挂载资源和对话历史。
 
 ## 2. 离线二进制包（推荐：免 uv / npm 安装）
 
@@ -29,7 +31,9 @@
 
 包内已含：主程序、Node 独立二进制、mermaid-cli 与语法预检依赖（`vendor/`，
 安装时已跳过 Chromium 下载）、`styles/` 与 `skills/` 模板、`.env.example`、
-快速上手说明。**无需安装 uv、Python、Node、npm**，唯一外部依赖是系统浏览器。
+快速上手说明。Windows 包额外包含 `launcher.exe`（配置/TUI）和
+`launch_server.exe`（Web/API 服务）。**无需安装 uv、Python、Node、npm**，唯一外部
+依赖是系统浏览器。
 
 使用步骤：
 
@@ -42,6 +46,9 @@
    macOS 首次运行如被 Gatekeeper 拦截：`xattr -d com.apple.quarantine flowchart-agent`。
 3. 命令行运行 `./flowchart-agent chat`（Windows 为 `flowchart-agent.exe chat`）；
    产物默认写到当前目录的 `output/`。
+4. Windows 启动 Web 服务：双击 `launch_server.exe`。监听地址、端口、输出和数据库目录
+   由同目录 `.env` 的 `SERVER_HOST`、`SERVER_PORT`、`SERVER_OUTPUT`、
+   `SERVER_DATA_DIR` 控制；`SERVER_OPEN_BROWSER=true` 时服务就绪后自动打开网页。
 
 维护者本地打 macOS 包（CI 之外的调试手段）：
 
@@ -77,12 +84,27 @@ uv run flowchart-agent run test_datas/gen/1.txt -o output
 
 日常使用：`uv run flowchart-agent chat`（或 `uv run python -m flowchart_agent chat`）。
 
+启动 Web/API 服务：
+
+```bash
+uv run flowchart-agent server
+# 内网其他机器需要访问时，在 .env 设 SERVER_HOST=0.0.0.0，或显式传参：
+uv run flowchart-agent server --host 0.0.0.0 --port 8765 -o output
+```
+
+默认地址为 `http://127.0.0.1:8765/`，接口文档为 `/docs`。服务数据应放在受控磁盘并定期
+备份；不要把 `.env` 或 `flowchart.db` 放进发布归档、Git 仓库或公共共享目录。
+
 ## 4. Windows 部署注意事项
 
 - 推荐使用 **Windows Terminal** 或 VS Code 终端；老式 cmd.exe（GBK 代码页）可能出现
   边框字符/中文乱码，程序已做 UTF-8 best-effort 处理，但终端字体仍需支持 Unicode。
 - mmdc 调用已内置 `cmd /c` 兼容分支，无需额外配置。
 - 若遇到 puppeteer/Chromium 下载失败，见 §5.3 的离线方案。
+- `launcher.exe` 是首次配置/TUI 入口；`launch_server.exe` 是服务入口。二者都必须与
+  `flowchart-agent.exe`、`.env` 位于同一目录。
+- 内网监听 `0.0.0.0` 时，按公司网络策略限制防火墙来源；当前认证面向可信内网，
+  不建议直接暴露到公网。
 
 ## 5. 公司内网 / 离线部署
 

@@ -61,6 +61,8 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
 - 遇到超出你既有能力的专业任务（特定导出格式、行业图表规范、第三方工具对接等），
   或用户提到某个技能/技能包：先 list_skill_packs 发现 skills/ 目录中的技能包，
   有匹配的就用 use_skill 读取指引并严格遵照执行；没有就如实说明，用现有能力完成；
+- 用户明确要求把领域流程、操作规范或 Agent 指引沉淀为新技能时，用 create_skill
+  生成并校验技能包；普通作图请求不要创建技能；
 - 与流程图无关的闲聊：不用工具，简短回答并把话题引回流程图。
 
 规则：
@@ -108,12 +110,16 @@ class MainAgent:
         settings: Settings,
         session: DiagramSession,
         on_tool_call: Callable[[str, str], None] | None = None,
+        on_tool_result: Callable[[str, str], None] | None = None,
         on_delta: Callable[[str], None] | None = None,
         on_tick: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
         output_root: Path | None = None,
+        readable_root: Path | None = None,
+        readable_roots: list[Path] | tuple[Path, ...] | None = None,
         on_progress: Callable[[str], None] | None = None,
         command_runner=None,
+        should_cancel: Callable[[], bool] | None = None,
     ):
         self._settings = settings
         self._llm = LLMClient(settings.text_model)
@@ -121,6 +127,8 @@ class MainAgent:
         self._pending = _PendingImages(self._vision)
         # 检查管线（check 分支）：产物落 <output_root>/check/；懒加载
         self._output_root = output_root
+        self._readable_root = readable_root
+        self._readable_roots = readable_roots
         self._check_agent: CheckAgent | None = None
         self._on_progress = on_progress  # 界面层进度提示（路由/检查项执行）
         # 主模型无视觉能力且配置了视觉模型时，用视觉模型提供 OCR 工具作为替代
@@ -130,7 +138,12 @@ class MainAgent:
             else LLMClient(settings.vision_model)
         )
         skills = build_skills(
-            session, self._pending, ocr_llm=ocr_llm, command_runner=command_runner
+            session,
+            self._pending,
+            ocr_llm=ocr_llm,
+            command_runner=command_runner,
+            readable_root=readable_root,
+            readable_roots=readable_roots,
         )
         if not self._vision:  # 无视觉能力时不下发 read_image，避免模型误调
             skills = [s for s in skills if s.name != "read_image"]
@@ -139,9 +152,19 @@ class MainAgent:
         system = MAIN_SYSTEM + (_VISION_ON if self._vision else _VISION_OFF)
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._on_tool_call = on_tool_call  # 界面层用来展示工具调用过程
+        self._on_tool_result = on_tool_result
         self._on_delta = on_delta  # 界面层用来流式显示模型输出
         self._on_tick = on_tick  # 界面层用来估算 token 用量（工具参数增量）
         self._on_reasoning = on_reasoning  # 界面层用来提示思考流（reasoning_content）
+        self._should_cancel = should_cancel
+
+    def restore_history(self, messages: list[dict]) -> None:
+        """恢复持久化的用户/助手文本历史，不重放旧工具调用。"""
+        system = self._messages[0]
+        self._messages = [system] + [
+            {"role": item["role"], "content": item["content"]}
+            for item in messages if item.get("role") in {"user", "assistant"}
+        ]
 
     def chat(self, user_input: str, images: list[Path] | None = None) -> str:
         # 主模型无视觉能力时，图片路径仍随消息进入对话，由 ocr_image 提取文字
@@ -159,7 +182,12 @@ class MainAgent:
         category = route_category(self._llm, user_input, has_images=bool(images))
         if category == "check":
             if self._check_agent is None and self._output_root is not None:
-                self._check_agent = CheckAgent(self._settings, self._output_root)
+                self._check_agent = CheckAgent(
+                    self._settings,
+                    self._output_root,
+                    readable_root=self._readable_root,
+                    readable_roots=self._readable_roots,
+                )
             if self._check_agent is not None:
                 if self._on_progress:
                     self._on_progress("已路由到文档检查，正在分析素材…")
@@ -174,6 +202,8 @@ class MainAgent:
             override = self._multimodal_message(user_input, images)
 
         for _ in range(MAX_TOOL_ITERATIONS):
+            if self._should_cancel and self._should_cancel():
+                return self._cancelled_reply()
             messages = self._messages
             if override is not None:
                 messages = self._messages[:-1] + [override]
@@ -185,6 +215,8 @@ class MainAgent:
                 )
             else:
                 msg = self._llm.chat_with_tools(messages, self._tools)
+            if self._should_cancel and self._should_cancel():
+                return self._cancelled_reply()
             if not msg.tool_calls:
                 self._messages.append({"role": "assistant", "content": msg.content or ""})
                 logger.info("[chat] 助手回复（%d 字符）", len(msg.content or ""))
@@ -197,6 +229,8 @@ class MainAgent:
                 if self._on_tool_call:
                     self._on_tool_call(call.function.name, call.function.arguments)
                 result = self._execute(call.function.name, call.function.arguments)
+                if self._on_tool_result:
+                    self._on_tool_result(call.function.name, result)
                 logger.info(
                     "[tool] %s 完成（结果 %d 字符）：%s",
                     call.function.name, len(result),
@@ -205,6 +239,8 @@ class MainAgent:
                 self._messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": result}
                 )
+                if self._should_cancel and self._should_cancel():
+                    return self._cancelled_reply()
 
             # read_image 读取的图片：以一条新的 user 消息注入下一轮调用
             pending = self._pending.take()
@@ -213,6 +249,11 @@ class MainAgent:
                 self._messages.append({"role": "user", "content": note})
                 override = self._multimodal_message(note, pending)
         return "（连续工具调用次数过多，本次请求已中止，请换个说法再试）"
+
+    def _cancelled_reply(self) -> str:
+        reply = "生成已停止。已保留停止前最后一轮成功渲染的候选图。"
+        self._messages.append({"role": "assistant", "content": reply})
+        return reply
 
     @staticmethod
     def _multimodal_message(text: str, images: list[Path]) -> dict:

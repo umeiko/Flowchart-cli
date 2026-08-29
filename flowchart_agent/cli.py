@@ -2,12 +2,14 @@
 
 - python -m flowchart_agent run  <文档路径>  单文档批处理生成
 - python -m flowchart_agent chat             交互式对话（生成 + 实时修改）
+- python -m flowchart_agent server           启动 Web/API 服务
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -43,14 +45,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_common_args(p_chat)
 
+    p_server = sub.add_parser("server", help="启动 Web 工作台与 HTTP API 服务")
+    p_server.add_argument("--host", default=None, help="监听地址；默认读取 SERVER_HOST")
+    p_server.add_argument("--port", type=int, default=None, help="监听端口；默认读取 SERVER_PORT")
+    p_server.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="文件工作区根目录；默认读取 SERVER_OUTPUT",
+    )
+    p_server.add_argument(
+        "--data-dir", type=Path, default=None,
+        help="服务端会话产物目录，默认 <output>/server",
+    )
+    p_server.add_argument("--env", type=Path, default=None, help=".env 文件路径，默认 ./.env")
+    p_server.add_argument("-v", "--verbose", action="store_true", default=None, help="输出调试日志")
+
     args = parser.parse_args(argv)
-    _setup_logging(args.command, args.verbose)
 
     try:
         settings = load_settings(args.env)
+        if args.command == "server":
+            args.host = args.host or os.getenv("SERVER_HOST", "127.0.0.1")
+            args.port = args.port if args.port is not None else int(os.getenv("SERVER_PORT", "8765"))
+            args.output = args.output or Path(os.getenv("SERVER_OUTPUT", "output"))
+            configured_data = os.getenv("SERVER_DATA_DIR", "").strip()
+            args.data_dir = args.data_dir or (Path(configured_data) if configured_data else None)
+            if args.verbose is None:
+                args.verbose = os.getenv("SERVER_VERBOSE", "").lower() in ("1", "true", "yes")
     except RuntimeError as e:
         print(f"错误：{e}", file=sys.stderr)
         return 2
+    except ValueError as e:
+        print(f"错误：服务启动参数不合法：{e}", file=sys.stderr)
+        return 2
+
+    _setup_logging(args.command, bool(args.verbose))
 
     # 自带字体目录（Fonts/）注册进当前会话：之后启动的 draw.io / Chrome
     # 渲染子进程无需系统安装即可用到这些字体
@@ -61,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "chat":
         return run_chat(settings, args.output, yolo=args.yolo)
+    if args.command == "server":
+        return _run_server(settings, args.host, args.port, args.output, args.data_dir)
     # run 模式属生成大类：产物落 <output>/generate，与检查侧的 <output>/check 对应
     return _run_once(settings, args.document, args.output / "generate", args.style)
 
@@ -174,6 +204,24 @@ def _run_once(settings, document: Path, output: Path, style_name: str | None = N
             shutil.copy(result.image_path, final_img)
             print(f"最后一版渲染图：{final_img}")
     return 1
+
+
+def _run_server(
+    settings, host: str, port: int, output_dir: Path, data_dir: Path | None
+) -> int:
+    """启动最小单进程 Web/API 服务。"""
+    import uvicorn
+
+    from .server import create_app
+
+    output_dir = output_dir.resolve()
+    app = create_app(
+        settings,
+        data_root=(data_dir or output_dir / "server"),
+        workspace_root=output_dir,
+    )
+    uvicorn.run(app, host=host, port=port, log_level="info")
+    return 0
 
 
 if __name__ == "__main__":

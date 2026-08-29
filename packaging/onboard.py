@@ -39,6 +39,13 @@ VISION_MODEL_BASE_URL={v_base_url}
 # 渲染用浏览器（自动嗅探；改其它浏览器请修改此路径）
 CHROME_PATH={chrome}
 
+# Web/API 服务（双击 launch_server.exe）
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8765
+SERVER_OUTPUT=output
+SERVER_DATA_DIR=
+SERVER_OPEN_BROWSER=true
+
 {drawio_block}"""
 
 # draw.io 桌面版常见安装路径（drawio 引擎的本地渲染器，可选）

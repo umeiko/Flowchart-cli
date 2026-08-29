@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -33,11 +34,20 @@ class DiagramSession:
       成功结果同步到 output_dir/current.mmd / current.png / current.svg。
     """
 
-    def __init__(self, settings: Settings, output_dir: str | Path):
+    def __init__(
+        self,
+        settings: Settings,
+        output_dir: str | Path,
+        *,
+        style_dir: str | Path | None = None,
+        skill_dir: str | Path | None = None,
+    ):
         self._agent = FlowchartAgent(settings)
         self._settings = settings
         # 绝对路径：工具返回与 CLI 展示的产物位置始终是绝对路径
         self._output_dir = Path(output_dir).resolve()
+        self._style_dir = Path(style_dir).resolve() if style_dir is not None else None
+        self._skill_dir = Path(skill_dir).resolve() if skill_dir is not None else None
         self._default_bg = settings.render_background
         self.requirement = ""
         self.current_code = ""
@@ -51,12 +61,17 @@ class DiagramSession:
         # 已读技能包的 prompt_hint（技能名 → 要求文本），create/modify 时
         # 注入需求文本直通生成子模型
         self._skill_hints: dict[str, str] = {}
+        self._active_skill_names: set[str] = set()
         # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
         self.on_delta: Callable[[str], None] | None = None
         # 界面层的思考流回调（推理模型 reasoning_content，仅提示用）；None = 不需要
         self.on_reasoning: Callable[[str], None] | None = None
         # 界面层的轮次开始回调（清空上一轮流式显示）；None = 不需要
         self.on_round_start: Callable[[int], None] | None = None
+        self.on_stage: Callable[[str, str], None] | None = None
+        self.on_verify_delta: Callable[[str], None] | None = None
+        self.on_verify_tick: Callable[[str], None] | None = None
+        self.should_cancel: Callable[[], bool] | None = None
         # 视觉检视强度：full=完整（排版+内容语义），layout=仅基础图形检视
         self.verify_mode = settings.verify_mode
         # 出图引擎：mermaid（默认）或 drawio（LLM 直出 draw.io XML，
@@ -67,6 +82,54 @@ class DiagramSession:
             unavailable = check_drawio_available(settings.drawio_path)
             if unavailable:
                 logger.warning("drawio 引擎不可用：%s", unavailable)
+        self.restore_from_disk()
+
+    def restore_from_disk(self) -> None:
+        """从产物目录恢复版本号与当前图，供 TUI/Server 重启后继续会话。
+
+        版本号以磁盘上的 v<n> 目录为准，绝不依赖进程内旧值；当前源码按
+        会话正在使用的引擎恢复。该方法可重复调用（例如 Server 从数据库恢复
+        engine 后再调用一次）。
+        """
+        if not self._output_dir.is_dir():
+            return
+        versions = []
+        for path in self._output_dir.iterdir():
+            match = re.fullmatch(r"v(\d+)", path.name) if path.is_dir() else None
+            if match:
+                versions.append(int(match.group(1)))
+        self.version = max([self.version, *versions])
+        source = self._output_dir / (
+            "current.drawio" if self.engine == "drawio" else "current.mmd"
+        )
+        if source.is_file():
+            try:
+                self.current_code = source.read_text(encoding="utf-8")
+            except OSError as exc:
+                logger.warning("恢复当前图源码失败：%s", exc)
+        self.current_image = next(
+            (
+                path for suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+                if (path := self._output_dir / f"current{suffix}").is_file()
+            ),
+            None,
+        )
+
+    def _next_run_dir(self) -> Path:
+        """分配从未使用过的 v<n> 目录，避免重启恢复后覆盖历史产物。"""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        disk_versions = []
+        for path in self._output_dir.iterdir():
+            match = re.fullmatch(r"v(\d+)", path.name) if path.is_dir() else None
+            if match:
+                disk_versions.append(int(match.group(1)))
+        next_version = max([self.version, *disk_versions], default=0) + 1
+        run_dir = self._output_dir / f"v{next_version}"
+        while run_dir.exists():
+            next_version += 1
+            run_dir = self._output_dir / f"v{next_version}"
+        self.version = next_version
+        return run_dir
 
     def set_output_engine(self, engine: str) -> str:
         """切换出图引擎（set_output_engine 工具的 handler）。"""
@@ -126,7 +189,7 @@ class DiagramSession:
 
     def list_skill_packs(self) -> str:
         """列出 skills/ 目录下所有技能包（list_skill_packs 工具的 handler）。"""
-        packs = load_skill_packs()
+        packs = load_skill_packs(self._skill_dir)
         if not packs:
             return "skills 目录下没有可用的技能包。"
         return "可用技能包：\n" + "\n".join(
@@ -141,14 +204,16 @@ class DiagramSession:
         在"读技能"这一刻确定性生效，不靠模型长上下文记住传参。
         """
         try:
-            pack = get_skill_pack(name)
+            pack = get_skill_pack(name, self._skill_dir)
         except ValueError as e:
             return f"错误：{e}"
         note = ""
-        if pack.prompt_hint:
-            self._skill_hints[pack.name] = pack.prompt_hint
+        self._active_skill_names.add(pack.name)
+        generation_hint = pack.prompt_hint or pack.instructions
+        if generation_hint:
+            self._skill_hints[pack.name] = generation_hint
             note += (
-                f"\n\n（该技能的作图要求已直通生成模型：{pack.prompt_hint}）"
+                f"\n\n（该技能的作图要求已直通生成模型：{generation_hint}）"
             )
         if pack.layout:
             try:
@@ -167,6 +232,20 @@ class DiagramSession:
             f"{pack.instructions}{note}"
         )
 
+    def unuse_skill(self, name: str) -> None:
+        """卸载此前显式启用的 Skill，并重算剩余 Skill 的布局覆盖。"""
+        key = name.strip().lower()
+        self._skill_hints.pop(key, None)
+        self._active_skill_names.discard(key)
+        self._flow_grid = None
+        for active in sorted(self._active_skill_names):
+            try:
+                pack = get_skill_pack(active, self._skill_dir)
+                if pack.layout:
+                    self._flow_grid = flow_grid_from_spec(pack.layout)
+            except ValueError as exc:
+                logger.warning("重算 Skill %s 布局失败：%s", active, exc)
+
     def create_style(self, name: str, description: str) -> str:
         """风格生成子 Agent 入口（create_style 工具的 handler）。
 
@@ -174,11 +253,11 @@ class DiagramSession:
         """
         from .style_agent import StyleAgent  # 延迟导入：仅用到时加载
 
-        result = StyleAgent(self._settings).create(name, description)
+        result = StyleAgent(self._settings, directory=self._style_dir).create(name, description)
         if not result.ok:
             return f"风格生成失败：{result.error}"
         try:
-            self.style = get_style(name)  # 重新扫描 styles/，拿到刚落盘的插件
+            self.style = get_style(name, self._style_dir)
         except ValueError as e:  # 理论上刚校验过不会到这步，兜底
             return f"风格文件已生成（{result.path}），但加载失败：{e}"
         return (
@@ -186,6 +265,15 @@ class DiagramSession:
             f"已自动切换为当前风格：{self.style.name}（{self.style.description}）\n"
             "后续生成与修改将使用该风格。"
         )
+
+    def create_skill(self, name: str, description: str) -> str:
+        """生成并校验一个 Session 目录中的提示词型 Skill。"""
+        from .skill_agent import SkillAgent
+
+        result = SkillAgent(self._settings, self._skill_dir).create(name, description)
+        if not result.ok:
+            return f"Skill 生成失败：{result.error}"
+        return f"Skill 已生成（{result.rounds} 轮通过校验）：{result.path}"
 
     @property
     def has_diagram(self) -> bool:
@@ -202,7 +290,7 @@ class DiagramSession:
         default 插件始终被注入，用户编辑 styles/default.md 即可定制默认风格；
         default.md 不存在时退化为无风格（背景用 RENDER_BACKGROUND 配置）。
         """
-        return self.style or load_styles().get("default")
+        return self.style or load_styles(self._style_dir).get("default")
 
     @property
     def background(self) -> str:
@@ -215,7 +303,7 @@ class DiagramSession:
         )
 
     def list_styles(self) -> str:
-        styles = load_styles()
+        styles = load_styles(self._style_dir)
         if not styles:
             return "styles 目录下没有可用的风格模板。"
         current_name = self.effective_style.name if self.effective_style else ""
@@ -227,7 +315,7 @@ class DiagramSession:
 
     def set_style(self, name: str) -> str:
         try:
-            self.style = get_style(name)
+            self.style = get_style(name, self._style_dir)
         except ValueError as e:
             return f"错误：{e}"
         return (
@@ -271,7 +359,7 @@ class DiagramSession:
             self.requirement += f"\n\n（需求参考图片：{reference}）"
         if style:
             try:
-                self.style = get_style(style)
+                self.style = get_style(style, self._style_dir)
             except ValueError as e:
                 return f"错误：{e}"
             hint = f"\n{self.style.prompt_hint}" if self.style.prompt_hint else ""
@@ -316,8 +404,7 @@ class DiagramSession:
         initial_feedback: str,
         reference_image: Path | None = None,
     ) -> str:
-        self.version += 1
-        run_dir = self._output_dir / f"v{self.version}"
+        run_dir = self._next_run_dir()
         if initial_code:
             action = f"modify_diagram(修改意见：{initial_feedback[:100]})"
         else:
@@ -338,10 +425,22 @@ class DiagramSession:
             on_reasoning=self.on_reasoning,
             verify_mode=self.verify_mode,
             on_round_start=self.on_round_start,
+            on_stage=self.on_stage,
             action=action,
             engine=self.engine,
             flow_grid=self._flow_grid,
+            on_candidate=lambda code, image, svg, round_no: self._publish_candidate(
+                code, image, svg, run_dir, round_no
+            ),
+            should_cancel=self.should_cancel,
+            on_verify_delta=self.on_verify_delta,
+            on_verify_tick=self.on_verify_tick,
         )
+        if result.cancelled:
+            return (
+                "生成已停止。已保留本次最后一轮成功渲染的候选图；"
+                f"过程产物见 {run_dir}"
+            )
         if not result.success:
             feedback = result.final_feedback or "未知原因"
             if not result.mermaid_code:
@@ -385,7 +484,7 @@ class DiagramSession:
         spec = ""
         if style_name:
             try:
-                style_obj = get_style(style_name)
+                style_obj = get_style(style_name, self._style_dir)
             except ValueError as e:
                 return f"错误：{e}"
         elif style_document and style_document.strip():
@@ -395,8 +494,7 @@ class DiagramSession:
 
         from .restyle_agent import RestyleAgent  # 延迟导入：仅用到时加载
 
-        self.version += 1
-        run_dir = self._output_dir / f"v{self.version}"
+        run_dir = self._next_run_dir()
         result = RestyleAgent(self._settings).restyle(
             self.current_code,
             style=style_obj,
@@ -455,3 +553,35 @@ class DiagramSession:
             f"渲染图片：{current_img}{svg_note}\n"
             f"过程产物：{run_dir}"
         )
+
+    def _publish_candidate(
+        self,
+        code: str,
+        image_path: Path | None,
+        svg_path: Path | None,
+        run_dir: Path,
+        round_no: int,
+    ) -> None:
+        """把已渲染候选立即同步为 current.*，不等待视觉验证结束。"""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self.current_code = code
+        self.current_image = image_path
+        source = self._output_dir / (
+            "current.drawio" if self.engine == "drawio" else "current.mmd"
+        )
+        source.write_text(code, encoding="utf-8")
+        if image_path and image_path.is_file():
+            for suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+                stale = self._output_dir / f"current{suffix}"
+                if stale.exists() and suffix != image_path.suffix.lower():
+                    stale.unlink()
+            target = self._output_dir / f"current{image_path.suffix.lower()}"
+            shutil.copy2(image_path, target)
+            self.current_image = target
+        if svg_path and svg_path.is_file():
+            shutil.copy2(svg_path, self._output_dir / "current.svg")
+        elif not (image_path and image_path.suffix.lower() == ".svg"):
+            stale_svg = self._output_dir / "current.svg"
+            if stale_svg.exists():
+                stale_svg.unlink()
+        logger.info("候选图发布：v%d round_%d -> current.*（尚待验证）", self.version, round_no)

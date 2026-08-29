@@ -47,9 +47,10 @@ class StyleResult:
 class StyleAgent:
     """生成风格插件的子 Agent。校验通过才写盘，写盘即可被主 Agent 发现。"""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, directory: str | Path | None = None):
         self._llm = LLMClient(settings.text_model)
         self._settings = settings
+        self._directory = Path(directory).resolve() if directory is not None else styles_dir()
 
     def create(self, name: str, description: str) -> StyleResult:
         name = name.strip().lower()
@@ -59,7 +60,8 @@ class StyleAgent:
                 error=f"风格标识 {name!r} 不合法：只能含小写字母/数字/下划线/连字符，"
                 "且以字母或数字开头（如 handdrawn、business-blue）。",
             )
-        target = styles_dir() / f"{name}.md"
+        target = self._directory / f"{name}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             return StyleResult(
                 ok=False,

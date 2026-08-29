@@ -5,6 +5,8 @@ __pycache__/
 venv/
 node_modules/
 output*/
+/log.txt
+/report.txt
 .puppeteer-config.json
 .DS_Store
 frdetr*/

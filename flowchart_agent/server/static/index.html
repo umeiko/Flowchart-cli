@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flowchart Agent</title>
+  <link rel="stylesheet" href="/static/app.css?v=user-settings">
+</head>
+<body>
+  <main class="shell">
+    <nav class="sessionbar" aria-label="Session 管理">
+      <div id="session-tabs" class="session-tabs"></div>
+      <div class="status"><span id="status-dot"></span><span id="status">正在连接</span></div>
+      <button id="new-session" class="session-action" type="button">＋ 新建 Session</button>
+      <details id="user-menu" class="user-menu">
+        <summary class="user-summary" aria-label="打开用户菜单">
+          <span class="user-avatar" aria-hidden="true"><img id="user-avatar-image" class="hidden" alt=""><span id="user-avatar-fallback">账</span></span>
+          <span id="user-name" class="user-name">账户</span><span class="user-caret">⌄</span>
+        </summary>
+        <div class="session-menu user-menu-panel"><button id="user-settings" type="button">用户设置</button><button id="logout" class="logout-action" type="button">退出登录</button></div>
+      </details>
+    </nav>
+
+    <section class="workspace">
+      <aside class="filebar">
+        <div class="filebar-head">
+          <div><p class="eyebrow">CLIENT</p><h2 id="sidebar-title">output</h2></div>
+          <div class="filebar-actions"><button id="file-actions" class="icon-button" type="button" title="新建文件或目录" aria-label="新建文件或目录">＋</button><button id="refresh-tree" class="icon-button" type="button" title="刷新文件树" aria-label="刷新文件树">↻</button></div>
+        </div>
+        <nav class="sidebar-tabs" aria-label="客户端资源">
+          <button class="sidebar-tab active" data-section="workspace" type="button">Workspace</button>
+          <button class="sidebar-tab" data-section="skills" type="button">Skills</button>
+          <button class="sidebar-tab" data-section="styles" type="button">Styles</button>
+        </nav>
+        <div id="workspace-panel" class="sidebar-panel active">
+          <div id="file-tree" class="file-tree"><p class="tree-empty">正在读取文件…</p></div>
+          <div class="drop-hint">拖入文件，保存到当前 Session</div>
+        </div>
+        <div id="skills-panel" class="sidebar-panel resource-list"></div>
+        <div id="styles-panel" class="sidebar-panel resource-list"></div>
+      </aside>
+
+      <div id="left-resizer" class="layout-resizer vertical" role="separator" aria-label="调整文件栏宽度" aria-orientation="vertical" tabindex="0"></div>
+
+      <article class="conversation">
+        <div id="messages" class="messages" aria-live="polite">
+          <div class="message assistant">描述你要创建的流程图，也可以附带需求文档或参考图片。</div>
+        </div>
+        <div id="composer-resizer" class="layout-resizer horizontal" role="separator" aria-label="调整输入区高度" aria-orientation="horizontal" tabindex="0"></div>
+        <form id="composer" class="composer">
+          <label class="file-button" title="添加附件">
+            <input id="file" type="file" multiple>
+            <span>＋ 附件</span>
+          </label>
+          <div id="attachments" class="attachments"></div>
+          <textarea id="prompt" rows="3" placeholder="例如：画一个带验证码和失败重试的登录流程（Enter 生成，Shift+Enter 换行）" required></textarea>
+          <button id="send" type="submit">生成</button>
+          <button id="stop" class="stop-run hidden" type="button">停止</button>
+          <div class="composer-drop-hint">松开后保存到 output，并添加为对话附件</div>
+        </form>
+      </article>
+
+      <div id="right-resizer" class="layout-resizer vertical" role="separator" aria-label="调整预览栏宽度" aria-orientation="vertical" tabindex="0"></div>
+
+      <aside class="preview">
+        <div class="preview-head">
+          <div><p id="preview-kicker" class="eyebrow">CURRENT DIAGRAM</p><h2 id="preview-title">当前图</h2></div>
+          <div class="preview-actions">
+            <button id="back-diagram" class="text-button hidden" type="button">返回当前图</button>
+            <button id="save-resource" class="text-button hidden" type="button">保存</button>
+            <button id="delete-resource" class="danger-button hidden" type="button">删除</button>
+            <button id="attach-workspace-file" class="attach-button hidden" type="button">＋ 加入聊天附件</button>
+            <a id="open-file" class="text-link hidden" href="#" target="_blank">打开原文件</a>
+            <a id="source-link" class="text-link hidden" href="#">下载源码</a>
+          </div>
+        </div>
+        <div id="canvas" class="canvas empty">生成完成后，流程图会出现在这里。</div>
+        <article id="markdown-view" class="document-view hidden"></article>
+        <pre id="code-view" class="code-view hidden"></pre>
+        <textarea id="resource-editor" class="resource-editor hidden" spellcheck="false"></textarea>
+        <details id="source-panel">
+          <summary>查看源码</summary>
+          <pre id="source">尚无源码</pre>
+        </details>
+      </aside>
+    </section>
+  </main>
+  <div id="file-context-menu" class="file-context-menu hidden" role="menu">
+    <button type="button" data-file-action="new-file">新建文本文件</button>
+    <button type="button" data-file-action="new-directory">新建目录</button>
+    <button type="button" data-file-action="paste">粘贴</button>
+    <hr>
+    <button type="button" data-file-action="copy">复制</button>
+    <button type="button" data-file-action="cut">剪切</button>
+    <button type="button" data-file-action="rename">重命名</button>
+    <button type="button" data-file-action="download">下载</button>
+    <hr>
+    <button type="button" class="danger-menu-item" data-file-action="delete">删除</button>
+  </div>
+  <dialog id="file-entry-dialog" class="resource-dialog">
+    <form id="file-entry-form"><p class="eyebrow">WORKSPACE</p><h2 id="file-entry-title">新建文件</h2><label for="file-entry-name">名称</label><input id="file-entry-name" maxlength="180" required autocomplete="off"><p id="file-entry-help" class="dialog-help"></p><div class="dialog-actions"><button id="file-entry-cancel" class="text-button" type="button">取消</button><button class="attach-button" type="submit">确认</button></div></form>
+  </dialog>
+  <dialog id="resource-dialog" class="resource-dialog">
+    <form id="resource-dialog-form" method="dialog">
+      <p class="eyebrow">NEW RESOURCE</p>
+      <h2 id="resource-dialog-title">新建资源</h2>
+      <label for="resource-name">名称</label>
+      <input id="resource-name" name="name" autocomplete="off" required pattern="[A-Za-z0-9_-]+">
+      <label for="resource-description">需求描述</label>
+      <textarea id="resource-description" rows="6" placeholder="描述适用场景、触发条件、风格要求或直接粘贴完整需求"></textarea>
+      <p class="dialog-help">“AI 生成”会生成并校验完整资源；“空白模板”只创建合法文件头，供你手动编辑。</p>
+      <div class="dialog-actions">
+        <button id="resource-dialog-cancel" class="text-button" type="button">取消</button>
+        <button class="text-button" type="submit" value="blank">空白模板</button>
+        <button class="attach-button" type="submit" value="generate">AI 生成</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="auth-dialog" class="resource-dialog auth-dialog">
+    <form id="auth-form">
+      <p class="eyebrow">FLOWCHART AGENT</p><h2>登录工作台</h2>
+      <label for="auth-username">用户名</label><input id="auth-username" autocomplete="username" required minlength="3">
+      <label for="auth-password">密码</label><input id="auth-password" type="password" autocomplete="current-password" required minlength="8">
+      <p id="auth-error" class="dialog-help"></p>
+      <div class="dialog-actions"><button id="register" class="text-button" type="button">注册</button><button class="attach-button" type="submit">登录</button></div>
+    </form>
+  </dialog>
+  <dialog id="user-settings-dialog" class="resource-dialog user-settings-dialog">
+    <form id="user-settings-form">
+      <p class="eyebrow">USER SETTINGS</p><h2>用户设置</h2>
+      <div class="avatar-editor">
+        <span class="settings-avatar" aria-hidden="true"><img id="settings-avatar-image" class="hidden" alt=""><span id="settings-avatar-fallback">账</span></span>
+        <div class="avatar-editor-copy"><strong id="settings-username">账户</strong><span>PNG、JPEG、WebP 或 GIF，最大 2 MB</span></div>
+      </div>
+      <label class="avatar-file-button" for="avatar-file">选择头像<input id="avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+      <p id="user-settings-error" class="dialog-help"></p>
+      <div class="dialog-actions avatar-actions"><button id="avatar-remove" class="danger-button" type="button">移除头像</button><span></span><button id="user-settings-cancel" class="text-button" type="button">取消</button><button class="attach-button" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="rename-session-dialog" class="resource-dialog">
+    <form id="rename-session-form"><p class="eyebrow">SESSION</p><h2>重命名会话</h2><label for="session-title-input">会话名称</label><input id="session-title-input" maxlength="80" required><div class="dialog-actions"><button id="rename-session-cancel" class="text-button" type="button">取消</button><button class="attach-button" type="submit">保存</button></div></form>
+  </dialog>
+  <dialog id="delete-session-dialog" class="resource-dialog danger-dialog">
+    <form id="delete-session-form"><p class="eyebrow">DANGER ZONE</p><h2>永久删除会话？</h2><p id="delete-session-message" class="dialog-warning"></p><p class="dialog-help">会话历史、附件、生成文件及客户端资源将被永久删除，此操作不可恢复。</p><div class="dialog-actions"><button id="delete-session-cancel" class="text-button" type="button">取消</button><button class="danger-confirm" type="submit">永久删除</button></div></form>
+  </dialog>
+  <script src="/static/app.js?v=user-settings" defer></script>
+</body>
+</html>

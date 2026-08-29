@@ -6,7 +6,7 @@ import difflib
 import re
 from functools import partial
 from pathlib import Path
-from typing import Protocol
+from typing import Iterable, Protocol
 
 from ..images import validate_image
 from ..llm import LLMClient
@@ -19,6 +19,57 @@ _MAX_FIND_RESULTS = 20
 _MAX_GREP_RESULTS = 50
 _MAX_FIND_WALK = 5000  # 最多遍历的文件数，防止在大目录里卡死
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def resolve_readable_path(
+    path: str | Path,
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+    *,
+    allow_root: bool = False,
+) -> Path:
+    """Resolve a read path and enforce an optional sandbox boundary.
+
+    CLI callers keep the historical unrestricted behavior by omitting ``root``.
+    Server callers pass the current Session root plus its user-visible subdirs.
+    """
+    raw = Path(path)
+    if root is None:
+        return raw.resolve()
+    boundary = Path(root).resolve()
+    candidate = (raw if raw.is_absolute() else boundary / raw).resolve()
+    try:
+        candidate.relative_to(boundary)
+    except ValueError as exc:
+        raise ValueError("只允许读取当前 Session 内的文件") from exc
+    allowed = tuple(Path(item).resolve() for item in (readable_roots or (boundary,)))
+    if candidate == boundary and allow_root:
+        return candidate
+    if not any(candidate == item or item in candidate.parents for item in allowed):
+        raise ValueError("只允许读取当前 Session 的工作区、附件和产物目录")
+    return candidate
+
+
+def _search_roots(
+    directory: str,
+    root: Path | None,
+    readable_roots: Iterable[Path] | None,
+) -> list[Path]:
+    search_root = resolve_readable_path(
+        directory, root, readable_roots, allow_root=True
+    )
+    if root is not None and search_root == Path(root).resolve() and readable_roots:
+        return [Path(item).resolve() for item in readable_roots if Path(item).is_dir()]
+    return [search_root]
+
+
+def _valid_file_glob(file_glob: str) -> bool:
+    normalized = file_glob.replace("\\", "/")
+    return (
+        not Path(file_glob).is_absolute()
+        and not normalized.startswith("/")
+        and ".." not in normalized.split("/")
+    )
 
 
 def _writable_path(path: str, root: Path) -> Path:
@@ -65,35 +116,51 @@ def replace_in_file(path: str, old_text: str, new_text: str, root: Path,
     return f"已在 {p} 中完成 {count if replace_all else 1} 处替换。"
 
 
-def grep_files(pattern: str, directory: str = ".", file_glob: str = "") -> str:
+def grep_files(
+    pattern: str,
+    directory: str = ".",
+    file_glob: str = "",
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+) -> str:
     try:
         rx = re.compile(pattern)
     except re.error as e:
         return f"错误：正则表达式不合法：{e}"
-    root = Path(directory)
-    if not root.is_dir():
+    if file_glob and not _valid_file_glob(file_glob):
+        return "错误：文件名过滤条件不能越出当前 Session"
+    try:
+        roots = _search_roots(directory, root, readable_roots)
+    except ValueError as e:
+        return f"错误：{e}"
+    if not all(search_root.is_dir() for search_root in roots):
         return f"错误：目录不存在：{directory}"
     results: list[str] = []
     walked = 0
-    for p in root.rglob(file_glob or "*"):
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in p.parts):
-            continue
-        if not p.is_file():
-            continue
-        walked += 1
-        try:
-            lines = p.read_text(encoding="utf-8").splitlines()
-        except (UnicodeDecodeError, OSError):
-            continue  # 跳过二进制/非 UTF-8 文件
-        for i, line in enumerate(lines, 1):
-            if rx.search(line):
-                results.append(f"{p}:{i}: {line.strip()[:150]}")
-                if len(results) >= _MAX_GREP_RESULTS:
-                    break
+    for search_root in roots:
+        for p in search_root.rglob(file_glob or "*"):
+            relative_parts = p.relative_to(search_root).parts
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
+                continue
+            if not p.is_file():
+                continue
+            walked += 1
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue  # 跳过二进制/非 UTF-8 文件
+            for i, line in enumerate(lines, 1):
+                if rx.search(line):
+                    results.append(f"{p}:{i}: {line.strip()[:150]}")
+                    if len(results) >= _MAX_GREP_RESULTS:
+                        break
+            if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
+                break
         if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
             break
     if not results:
-        return f"没有匹配 {pattern!r} 的内容（搜索范围：{root.resolve()}）"
+        scope = "、".join(str(item) for item in roots)
+        return f"没有匹配 {pattern!r} 的内容（搜索范围：{scope}）"
     suffix = f"（已达 {_MAX_GREP_RESULTS} 条上限）" if len(results) >= _MAX_GREP_RESULTS else ""
     return f"找到 {len(results)} 处匹配{suffix}：\n" + "\n".join(results)
 
@@ -114,8 +181,15 @@ class CommandRunner(Protocol):
     def run(self, command: str) -> str: ...
 
 
-def read_document(path: str) -> str:
-    p = Path(path)
+def read_document(
+    path: str,
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+) -> str:
+    try:
+        p = resolve_readable_path(path, root, readable_roots)
+    except ValueError as e:
+        return f"错误：{e}"
     if not p.is_file():
         # 给出同目录下的相似文件名候选，让主 Agent 可以自行纠正路径重试
         hint = ""
@@ -133,32 +207,49 @@ def read_document(path: str) -> str:
         return f"错误：不是 UTF-8 文本文件：{path}"
 
 
-def find_files(keyword: str, directory: str = ".") -> str:
-    root = Path(directory)
-    if not root.is_dir():
+def find_files(
+    keyword: str,
+    directory: str = ".",
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+) -> str:
+    try:
+        roots = _search_roots(directory, root, readable_roots)
+    except ValueError as e:
+        return f"错误：{e}"
+    if not all(search_root.is_dir() for search_root in roots):
         return f"错误：目录不存在：{directory}"
     matches: list[str] = []
     walked = 0
-    for p in root.rglob("*"):
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in p.parts):
-            continue
-        if p.is_file():
-            walked += 1
-            if keyword.lower() in p.name.lower():
-                matches.append(str(p))
-            if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
-                break
+    for search_root in roots:
+        for p in search_root.rglob("*"):
+            relative_parts = p.relative_to(search_root).parts
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
+                continue
+            if p.is_file():
+                walked += 1
+                if keyword.lower() in p.name.lower():
+                    matches.append(str(p))
+                if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
+                    break
+        if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
+            break
     if not matches:
-        return f"没有找到文件名包含 {keyword!r} 的文件（搜索范围：{root.resolve()}）"
+        scope = "、".join(str(item) for item in roots)
+        return f"没有找到文件名包含 {keyword!r} 的文件（搜索范围：{scope}）"
     return "找到以下文件：\n" + "\n".join(matches)
 
 
-def _make_ocr_handler(llm: LLMClient):
+def _make_ocr_handler(
+    llm: LLMClient,
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+):
     """ocr_image 工具的 handler：用多模态验证模型从图片提取文字。"""
 
     def ocr_image(path: str) -> str:
         try:
-            p = validate_image(path)
+            p = validate_image(resolve_readable_path(path, root, readable_roots))
         except ValueError as e:
             return f"错误：{e}"
         return llm.chat_with_image(OCR_PROMPT, p)
@@ -166,11 +257,47 @@ def _make_ocr_handler(llm: LLMClient):
     return ocr_image
 
 
+def _make_read_image_handler(
+    image_queue: ImageQueue,
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+):
+    def read_image(path: str) -> str:
+        try:
+            safe_path = resolve_readable_path(path, root, readable_roots)
+        except ValueError as e:
+            return f"错误：{e}"
+        return image_queue.add(str(safe_path))
+
+    return read_image
+
+
+def _make_create_handler(
+    session: DiagramSession,
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+):
+    def create_diagram(**kwargs) -> str:
+        image_path = kwargs.get("image_path")
+        if image_path:
+            try:
+                kwargs["image_path"] = str(
+                    resolve_readable_path(image_path, root, readable_roots)
+                )
+            except ValueError as e:
+                return f"错误：参考图片不可用：{e}"
+        return session.create(**kwargs)
+
+    return create_diagram
+
+
 def build_skills(
     session: DiagramSession,
     image_queue: ImageQueue,
     ocr_llm: LLMClient | None = None,
     command_runner: CommandRunner | None = None,
+    readable_root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
 ) -> list[Skill]:
     """构建主 Agent 的工具表。ocr_llm 不为 None 时注册 ocr_image
     （主模型无视觉能力时，用多模态验证模型做图片文字提取）；
@@ -187,7 +314,9 @@ def build_skills(
                 },
                 "required": ["path"],
             },
-            handler=read_document,
+            handler=partial(
+                read_document, root=readable_root, readable_roots=readable_roots
+            ),
         ),
         Skill(
             name="find_files",
@@ -207,7 +336,9 @@ def build_skills(
                 },
                 "required": ["keyword"],
             },
-            handler=find_files,
+            handler=partial(
+                find_files, root=readable_root, readable_roots=readable_roots
+            ),
         ),
         Skill(
             name="write_file",
@@ -272,7 +403,9 @@ def build_skills(
                 },
                 "required": ["pattern"],
             },
-            handler=grep_files,
+            handler=partial(
+                grep_files, root=readable_root, readable_roots=readable_roots
+            ),
         ),
         Skill(
             name="read_image",
@@ -288,7 +421,9 @@ def build_skills(
                 },
                 "required": ["path"],
             },
-            handler=image_queue.add,
+            handler=_make_read_image_handler(
+                image_queue, readable_root, readable_roots
+            ),
         ),
         Skill(
             name="create_diagram",
@@ -339,7 +474,7 @@ def build_skills(
                 },
                 "required": ["requirement"],
             },
-            handler=session.create,
+            handler=_make_create_handler(session, readable_root, readable_roots),
         ),
         Skill(
             name="list_styles",
@@ -433,6 +568,22 @@ def build_skills(
                 "required": ["name", "description"],
             },
             handler=session.create_style,
+        ),
+        Skill(
+            name="create_skill",
+            description=(
+                "根据用户描述生成提示词型 Skill，校验通过后写入当前会话的 skills 目录。"
+                "用户要求沉淀新的领域流程、操作规范或 Agent 指引时调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "英文小写 Skill 标识"},
+                    "description": {"type": "string", "description": "完整需求、触发条件和期望行为"},
+                },
+                "required": ["name", "description"],
+            },
+            handler=session.create_skill,
         ),
         Skill(
             name="modify_diagram",
@@ -581,7 +732,9 @@ def build_skills(
                     },
                     "required": ["path"],
                 },
-                handler=_make_ocr_handler(ocr_llm),
+                handler=_make_ocr_handler(
+                    ocr_llm, readable_root, readable_roots
+                ),
             )
         )
     return skills

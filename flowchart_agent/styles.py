@@ -79,6 +79,11 @@ def _parse_style_file(path: Path) -> Style | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    return parse_style_text(text)
+
+
+def parse_style_text(text: str) -> Style | None:
+    """解析一个风格文档；缺少合法 frontmatter 时返回 None。"""
     parts = text.split("---", 2)
     if len(parts) < 3 or parts[0].strip():
         return None

@@ -1,6 +1,8 @@
 # 注意：依赖的权威来源是 pyproject.toml，推荐使用 uv sync 安装。
 # 本文件仅为无 uv 环境下的 pip 备用（pip install -r requirements.txt），变更依赖时请同步更新。
+fastapi>=0.116.0
 openai>=1.0.0
 python-dotenv>=1.0.0
 prompt-toolkit>=3.0.0
 rich>=13.0.0
+uvicorn>=0.35.0

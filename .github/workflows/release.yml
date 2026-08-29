@@ -51,9 +51,13 @@ jobs:
           PYTHONIOENCODING: utf-8  # Windows runner 重定向 stdout 默认 cp1252，中文帮助需 UTF-8
         run: ${{ matrix.exe }} --help >/dev/null && echo "exe ok"
 
-      - name: 构建 launcher.exe（首次配置向导，仅 Windows 包附带）
+      - name: 构建 Windows 启动器（配置向导 + Web/API 服务）
         if: matrix.platform == 'win-x64'
-        run: pyinstaller packaging/launcher.spec --distpath dist/bin --workpath build/pyinstaller-launcher --noconfirm
+        shell: bash
+        run: |
+          pyinstaller packaging/launcher.spec --distpath dist/bin --workpath build/pyinstaller-launcher --noconfirm
+          pyinstaller packaging/launch_server.spec --distpath dist/bin --workpath build/pyinstaller-launch-server --noconfirm
+          dist/bin/launch_server.exe --help >/dev/null && echo "launch_server.exe ok"
 
       - uses: actions/setup-node@v4
         with:
@@ -95,8 +99,10 @@ jobs:
 
       - name: 挂到 GitHub Release（仅 tag 触发）
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          generate_release_notes: true
+          overwrite_files: true
           files: |
             dist/flowchart-agent-${{ matrix.platform }}-v*.zip
             dist/flowchart-agent-${{ matrix.platform }}-v*.tar.gz

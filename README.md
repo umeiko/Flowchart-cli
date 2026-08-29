@@ -54,6 +54,8 @@ flowchart TD
 
 > **不想装工具链？** 直接从 GitHub Release 下载离线包（内置 Node 与 mermaid-cli，
 > 解压即用，只需系统 Chrome/Edge），见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §2。
+> Windows 包提供两个入口：`launcher.exe` 配置并启动 TUI，`launch_server.exe`
+> 按 `.env` 的 `SERVER_*` 参数启动 Web/API 服务。
 
 ```bash
 # 1) Python 依赖（推荐 uv，按 uv.lock 锁定版本；会自动创建 .venv）
@@ -112,7 +114,21 @@ uv run flowchart-agent chat -o output --yolo
 # 批处理模式：单文档 → 图，跑完退出（--style 指定 styles/ 目录中的风格模板）
 uv run flowchart-agent run test_datas/gen/1.txt -o output
 uv run flowchart-agent run test_datas/gen/1.txt -o output --style dark
+
+# Web/API 服务（不提供 run_command；默认参数也可写入 .env 的 SERVER_* 配置）
+uv run flowchart-agent server
+# 命令行参数优先于 .env
+uv run flowchart-agent server --host 0.0.0.0 --port 8765 -o output
 ```
+
+启动后访问 <http://127.0.0.1:8765/>；Swagger 文档位于
+<http://127.0.0.1:8765/docs>，版本化接口说明见 [`docs/API.md`](docs/API.md)。
+Windows 离线包完成 `launcher.exe` 首次配置后，也可直接双击 `launch_server.exe`；
+它会等待服务就绪并按 `SERVER_OPEN_BROWSER` 自动打开网页。
+
+Web 提供登录、头像与用户设置、用户级 Session 管理、历史消息、附件、Skills/Styles 和文件树；可预览
+Markdown、XML/drawio、文本、PNG/JPEG/WebP 和 SVG。每个 Session 只可访问自己的
+`workspace/`、`attachments/`、`generate/`、`check/`，Agent 文件工具同样受此边界约束。
 
 **过程日志**：每次生成/修改的详细过程（触发动作、每轮生成/渲染/验证、每次 LLM
 请求的耗时与规模、mmdc 命令）写入 `output/generate/v<n>/run.log`（run 模式为
@@ -171,7 +187,7 @@ flowchart_agent/
 ├── tui_chips.py         # TUI 处理
 ├── chat_cli.py          # 交互式 REPL
 └── cli.py               # 命令行入口
-packaging/               # 离线包构建（PyInstaller spec + make_bundle.py + 首配向导 onboard.py）
+packaging/               # 离线包构建（主程序 + launcher.exe + launch_server.exe）
 styles/                  # 作图风格插件（.md 文件，可自行新增）
 scripts/
 └── mermaid_parse.mjs    # Node 侧语法预检

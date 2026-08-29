@@ -13,7 +13,11 @@ a = Analysis(
     [str(Path(SPECPATH) / "launcher.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[],
+    # FastAPI 工作台是运行时按文件路径读取的静态资源，PyInstaller 不会自动收集。
+    datas=[(
+        str(ROOT / "flowchart_agent" / "server" / "static"),
+        "flowchart_agent/server/static",
+    )],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],

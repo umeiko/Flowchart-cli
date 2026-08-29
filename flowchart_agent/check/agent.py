@@ -14,12 +14,12 @@ import csv
 import logging
 import shutil
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from ..config import Settings
 from ..images import validate_image
 from ..llm import LLMClient
-from ..skills.builtin import find_files, read_document
+from ..skills.builtin import find_files, read_document, resolve_readable_path
 from .classifier import CheckClassifier, Classification
 from .item_agent import ItemCheckAgent, ItemResult, VERDICT_FAIL, VERDICT_NA, VERDICT_PASS
 from .items import resolve_items
@@ -42,9 +42,17 @@ def _infer_kind(description: str) -> str:
 class CheckAgent:
     """文档/图片检视编排：素材收集 → 二级分类 → 逐项派发给 ItemCheckAgent → CSV 报告。"""
 
-    def __init__(self, settings: Settings, output_root: str | Path):
+    def __init__(
+        self,
+        settings: Settings,
+        output_root: str | Path,
+        readable_root: Path | None = None,
+        readable_roots: Iterable[Path] | None = None,
+    ):
         self._settings = settings
         self._check_root = Path(output_root) / "check"
+        self._readable_root = readable_root
+        self._readable_roots = tuple(readable_roots or ())
         self._text_llm = LLMClient(settings.text_model)
         self._vision_llm = (
             LLMClient(settings.vision_model) if settings.vision_model else None
@@ -154,22 +162,35 @@ class CheckAgent:
 
     # ---------- 素材收集 ----------
 
-    @staticmethod
-    def _load_documents(paths: list[str]) -> tuple[list[str], list[Path], list[str]]:
+    def _load_documents(self, paths: list[str]) -> tuple[list[str], list[Path], list[str]]:
         """读文档；路径不存在时按文件名关键词 find_files 自我纠正一次。
         返回 (文档文本, 实际读取的文件路径, 错误列表)。"""
         docs, doc_paths, errors = [], [], []
         for raw in paths:
             path = raw
-            if not Path(path).is_file():
-                found = find_files(Path(path).name or path)
+            try:
+                candidate = resolve_readable_path(
+                    path, self._readable_root, self._readable_roots
+                )
+            except ValueError:
+                candidate = Path(path)
+            if not candidate.is_file():
+                found = find_files(
+                    Path(path).name or path,
+                    root=self._readable_root,
+                    readable_roots=self._readable_roots,
+                )
                 candidates = [
                     l for l in found.splitlines()[1:] if l.strip()
                 ] if found.startswith("找到") else []
                 if len(candidates) == 1:
                     logger.info("[check] 路径纠正：%s -> %s", path, candidates[0])
                     path = candidates[0]
-            content = read_document(path)
+            content = read_document(
+                path,
+                root=self._readable_root,
+                readable_roots=self._readable_roots,
+            )
             if content.startswith("错误："):
                 errors.append(content)
             else:
@@ -177,12 +198,14 @@ class CheckAgent:
                 doc_paths.append(Path(path))
         return docs, doc_paths, errors
 
-    @staticmethod
-    def _load_images(paths: list[str]) -> tuple[list[Path], list[str]]:
+    def _load_images(self, paths: list[str]) -> tuple[list[Path], list[str]]:
         images, errors = [], []
         for raw in paths:
             try:
-                images.append(validate_image(raw))
+                safe_path = resolve_readable_path(
+                    raw, self._readable_root, self._readable_roots
+                )
+                images.append(validate_image(safe_path))
             except ValueError as e:
                 errors.append(f"错误：{e}")
         return images, errors

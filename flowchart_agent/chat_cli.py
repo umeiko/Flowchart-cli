@@ -140,8 +140,11 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
     display = _StreamDisplay(console)
     display.engine = session.engine
     session.on_delta = display.show_generation  # 生成循环的源码流式显示
+    session.on_verify_delta = display.show_verification
+    session.on_verify_tick = display.tick
     session.on_reasoning = display.show_reasoning  # 推理模型的思考流提示
     session.on_round_start = display.reset_segment  # 每轮清空上一段，避免堆砌
+    session.on_stage = display.show_stage
     runner = _CommandRunner(console, display, yolo=yolo, cwd=output_dir)  # run_command 后端
     agent = MainAgent(
         settings, session,
@@ -369,6 +372,20 @@ class _StreamDisplay:
         self.tick(delta)
         label = "drawio XML" if self.engine == "drawio" else "Mermaid"
         self._feed(f"[bold cyan]生成 {label} 中…[/bold cyan]", "cyan", delta)
+
+    def show_verification(self, delta: str) -> None:
+        """流式展示检视模型的公开正文；隐藏 reasoning 仍走单行思考状态。"""
+        self.tick(delta)
+        self._feed("[bold magenta]视觉验证中…[/bold magenta]", "magenta", delta)
+
+    def show_stage(self, stage: str, message: str) -> None:
+        """阶段切换时回到单行状态，避免验证流与上一段图表源码混在一起。"""
+        if stage in {"rendering", "verifying", "verified"}:
+            self._buf = []
+            self._reason_buf = ""
+        self._status_text = message
+        if self._live is not None and not self._buf:
+            self._live.update(self._wait_view())
 
     def reset_segment(self, _round_no: int = 0) -> None:
         """新一轮生成开始：清空上一段（上一轮的 Mermaid 原文），
@@ -737,4 +754,3 @@ def _print_banner(
             "[red bold]yolo 模式：Agent 的 shell 命令将免确认直接执行[/red bold]"
         )
     return None
-

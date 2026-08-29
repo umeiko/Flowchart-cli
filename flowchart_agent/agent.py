@@ -136,6 +136,7 @@ class AgentResult:
     image_path: Path | None = None
     rounds: list[RoundRecord] = field(default_factory=list)
     final_feedback: str = ""
+    cancelled: bool = False
 
 
 class FlowchartAgent:
@@ -160,9 +161,14 @@ class FlowchartAgent:
         on_reasoning=None,
         verify_mode: str = "full",
         on_round_start=None,
+        on_stage=None,
         action: str = "",
         engine: str = "mermaid",
         flow_grid: FlowGrid | None = None,
+        on_candidate=None,
+        should_cancel=None,
+        on_verify_delta=None,
+        on_verify_tick=None,
     ) -> AgentResult:
         """生成-渲染-验证循环。
 
@@ -252,11 +258,17 @@ class FlowchartAgent:
                 )
             logger.info("输出目录：%s", output_dir)
             for round_no in range(1, self._settings.max_rounds + 1):
+                if should_cancel and should_cancel():
+                    result.cancelled = True
+                    result.final_feedback = "用户已停止生成"
+                    return result
                 logger.info("=== 第 %d/%d 轮 ===", round_no, self._settings.max_rounds)
                 if on_round_start:
                     on_round_start(round_no)
 
                 # 1. 生成 / 修复
+                if on_stage:
+                    on_stage("generating", f"第 {round_no} 轮：正在生成图表代码")
                 code, raw = self._generate(
                     document, code, feedback,
                     image=first_round_image if round_no == 1 else None,
@@ -264,6 +276,10 @@ class FlowchartAgent:
                     style=style, engine=engine,
                     diagram_type=diagram_type, flow_grid=flow_grid,
                 )
+                if should_cancel and should_cancel():
+                    result.cancelled = True
+                    result.final_feedback = "用户已停止生成"
+                    return result
                 raw_path = output_dir / f"round_{round_no}_generate_raw.txt"
                 raw_path.write_text(raw, encoding="utf-8")
                 record = RoundRecord(round_no=round_no, mermaid_code=code, render_ok=False)
@@ -283,6 +299,8 @@ class FlowchartAgent:
                     continue
 
                 # 2. 渲染校验
+                if on_stage:
+                    on_stage("rendering", f"第 {round_no} 轮：正在渲染图表")
                 if engine == "drawio":
                     # 配色规则由 style 引擎段注入提示词；此处注入确定性几何
                     # （架构图网格 / 流程图分层分支布局），XML 非法直接打回重修
@@ -356,14 +374,42 @@ class FlowchartAgent:
                             logger.warning("第 %d 轮：SVG 渲染失败（不影响主流程）-> %s",
                                            round_no, svg.error[:200])
 
+                # 一轮只要已经成功渲染，就立即向会话发布候选图。视觉验证可能耗时，
+                # 用户在验证或下一轮生成期间停止时，current.* 也应指向本次最新产物。
+                if on_candidate:
+                    on_candidate(styled, render.image_path, record.svg_path, round_no)
+                if should_cancel and should_cancel():
+                    result.cancelled = True
+                    result.mermaid_code = styled
+                    result.image_path = render.image_path
+                    result.final_feedback = "用户已停止生成"
+                    return result
+
                 # 3. 视觉验证（code 模式 / 未配置视觉模型时审查源码）
+                if on_stage:
+                    label = "视觉验证" if verify_mode != "code" and self._vision_llm else "代码验证"
+                    on_stage("verifying", f"第 {round_no} 轮：正在{label}")
                 passed, critique, raw_reply = self._verify(
-                    document, render.image_path, verify_mode, code=styled
+                    document,
+                    render.image_path,
+                    verify_mode,
+                    code=styled,
+                    on_delta=on_verify_delta,
+                    on_tick=on_verify_tick,
+                    on_reasoning=on_reasoning,
                 )
+                if should_cancel and should_cancel():
+                    result.cancelled = True
+                    result.mermaid_code = styled
+                    result.image_path = render.image_path
+                    result.final_feedback = "用户已停止生成"
+                    return result
                 raw_path = output_dir / f"round_{round_no}_verify_raw.txt"
                 raw_path.write_text(raw_reply, encoding="utf-8")
                 record.feedback = critique
                 if passed:
+                    if on_stage:
+                        on_stage("verified", f"第 {round_no} 轮：验证通过")
                     logger.info("第 %d 轮：视觉验证通过", round_no)
                     result.success = True
                     result.mermaid_code = styled
@@ -555,7 +601,14 @@ class FlowchartAgent:
         return extract_mermaid(raw), raw
 
     def _verify(
-        self, document: str, image_path: Path, mode: str = "full", code: str = ""
+        self,
+        document: str,
+        image_path: Path,
+        mode: str = "full",
+        code: str = "",
+        on_delta=None,
+        on_tick=None,
+        on_reasoning=None,
     ) -> tuple[bool, str, str]:
         """返回 (是否通过, 问题列表, 模型原始回复)。
 
@@ -583,7 +636,9 @@ class FlowchartAgent:
                     ),
                 }
             ]
-            passed, issues, reply = self._judge(self._text_llm, messages)
+            passed, issues, reply = self._judge(
+                self._text_llm, messages, on_delta, on_tick, on_reasoning
+            )
         else:
             if mode == "layout":
                 # 无参 .format()：模板里的 JSON 示例是 {{}} 转义写法，
@@ -597,12 +652,21 @@ class FlowchartAgent:
                             self._vision_llm.model_name)
             messages = LLMClient.with_images(
                 [{"role": "user", "content": prompt}], [image_path])
-            passed, issues, reply = self._judge(self._vision_llm, messages)
+            passed, issues, reply = self._judge(
+                self._vision_llm, messages, on_delta, on_tick, on_reasoning
+            )
         verdict = "PASS" if passed else "FAIL"
         logger.info("检视结论：%s（理由 %d 字符）", verdict, len(issues or reply))
         return passed, issues, reply
 
-    def _judge(self, llm: LLMClient, messages: list[dict]) -> tuple[bool, str, str]:
+    def _judge(
+        self,
+        llm: LLMClient,
+        messages: list[dict],
+        on_delta=None,
+        on_tick=None,
+        on_reasoning=None,
+    ) -> tuple[bool, str, str]:
         """一次请求拿检视结论：工具与正文 JSON 是平行通道，不强制、不重试。
 
         优先级：submit_result 工具调用 → 正文 JSON（模板要求先 reason
@@ -613,10 +677,26 @@ class FlowchartAgent:
         LLMClient 打 _no_tools 标记，本会话后续检视直接走纯文本，
         不再每轮白打一次注定失败的工具请求。
         """
+        def plain_reply() -> str:
+            if on_delta is not None or on_tick is not None or on_reasoning is not None:
+                return llm.chat_stream(
+                    messages, on_delta or (lambda _text: None), on_reasoning
+                ).strip()
+            return llm.chat(messages).strip()
+
         if getattr(llm, "_no_tools", False):
-            return self._judge_content(llm.chat(messages).strip())
+            return self._judge_content(plain_reply())
         try:
-            msg = llm.chat_with_tools(messages, [prompts.SUBMIT_RESULT_TOOL])
+            if on_delta is not None or on_tick is not None or on_reasoning is not None:
+                msg = llm.chat_with_tools_stream(
+                    messages,
+                    [prompts.SUBMIT_RESULT_TOOL],
+                    on_delta=on_delta or (lambda _text: None),
+                    on_tick=on_tick,
+                    on_reasoning=on_reasoning,
+                )
+            else:
+                msg = llm.chat_with_tools(messages, [prompts.SUBMIT_RESULT_TOOL])
         except Exception as e:
             logger.warning("submit_result 工具调用失败（%s），退回纯文本检视", e)
             if "tool" in str(e).lower():
@@ -624,7 +704,7 @@ class FlowchartAgent:
                 logger.info("该端点似乎不支持工具调用，后续检视将直接请求纯文本")
             # 与正常路径同一条解析管线：模型可能照样吐了 JSON（比如端点
             # 不支持 tools，但提示词的正文 JSON 模板它看得懂）
-            return self._judge_content(llm.chat(messages).strip())
+            return self._judge_content(plain_reply())
         calls = getattr(msg, "tool_calls", None) or []
         if calls:
             raw_args = calls[0].function.arguments or "{}"

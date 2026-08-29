@@ -53,6 +53,10 @@ Windows 用户最简单的方式：双击 launcher.exe，按提示填 3 项模�
 （浏览器地址会自动嗅探，一般不用填），完成后自动进入对话模式。
 以后每次用也直接双击 launcher.exe 即可。
 
+启动多人 Web/API 服务：先完成上述配置，再双击 launch_server.exe。
+监听地址、端口和数据目录均在 .env 的 SERVER_* 配置中修改；默认启动后
+自动打开 http://127.0.0.1:8765/。关闭启动窗口或按 Ctrl+C 可停止服务。
+
 手动方式（macOS / Linux / 想用命令行的 Windows 用户）：
 
 1. 复制 .env.example 为 .env，填入模型 API 配置（TEXT_MODEL_* 必填，
@@ -144,12 +148,18 @@ def build(platform: str, exe: Path, outdir: Path) -> Path:
     shutil.copy(exe, target_exe)
     target_exe.chmod(target_exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    # 1.5) Windows 包附带 launcher.exe（首次配置向导，面向无命令行经验的用户；
-    # 仅当 CI 的 Windows 任务用 launcher.spec 构建出它时才存在）
-    launcher = exe.parent / "launcher.exe"
-    if platform == "win-x64" and launcher.is_file():
-        shutil.copy(launcher, bundle / "launcher.exe")
-        log("附带 launcher.exe（首次配置向导）")
+    # 1.5) Windows 包附带首次配置向导和服务启动器。
+    if platform == "win-x64":
+        helpers = {
+            "launcher.exe": "首次配置向导",
+            "launch_server.exe": "Web/API 服务启动器",
+        }
+        for filename, label in helpers.items():
+            helper = exe.parent / filename
+            if not helper.is_file():
+                raise SystemExit(f"Windows 发布包缺少 {filename}（先构建对应 PyInstaller spec）")
+            shutil.copy(helper, bundle / filename)
+            log(f"附带 {filename}（{label}）")
 
     # 2) vendor：node + mermaid-cli + 语法预检
     fetch_node(platform, bundle / "vendor" / "node")
