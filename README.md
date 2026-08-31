@@ -5,12 +5,9 @@
 ![main](docs/images/main.png)
 
 
-## 效果示例
+## 一个交互式生成流程图的Agent
 
-| 线性流程（登录） | 分支与回退（注册） |
-| :---: | :---: |
-| ![登录流程](docs/images/case_login.png) | ![注册流程](docs/images/case_register.png) |
-| 输入：`test_datas/gen/1.txt`，1 轮通过 | 含判断分支与回退循环，1 轮通过 |
+![alt text](docs/images/image.png)
 
 <details>
 <summary>登录流程的输入文档与生成代码</summary>
@@ -137,10 +134,8 @@ Markdown、XML/drawio、文本、PNG/JPEG/WebP 和 SVG。每个 Session 只可�
 
 ## 实现方案
 
-![双层 Agent 生成验证循环](docs/images/architecture_loop.svg)
-
-上图就是本工具的工作方式：主 Agent（文本 LLM + function calling）理解你的意图并调度 Skill，
-子循环负责把图画对——语法预检不合法就修，视觉验证不通过就改，最多迭代若干轮后收敛。
+主 Agent（文本 LLM + function calling）理解你的意图并调度 Skill，
+子循环负责把图画对;语法预检不合法就修，视觉验证不通过就改，最多迭代若干轮后收敛。
 
 详细设计见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)，部署见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
