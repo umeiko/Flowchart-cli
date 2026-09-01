@@ -13,6 +13,7 @@ name: skill-name        # 唯一标识（小写，agent 用它引用）
 description: 一句话描述 + 触发场景（agent 据此决定是否选用，写清楚触发词很重要）
 layout: node_width=172,node_height=28,gap_y=28   # 可选：drawio 流程图布局参数
 prompt_hint: 节点文字一律使用中文                  # 可选：直通生成子模型的作图要求
+kind: check                                      # 可选：声明为检查标准 Skill
 ---
 
 正文：写给主 Agent 的操作手册。use_skill 被调用时，这段内容会原样注入对话，
@@ -30,6 +31,30 @@ frontmatter 的可选 `prompt_hint` 字段：一行作图要求（语言、内�
 use_skill 时存进会话，create/modify 时自动注入需求文本**直通生成子模型**。
 技能正文只有主 Agent 可见，子模型只认 requirement——语言这类必须落到
 子模型的规则请写在这里，不要只写在正文里。
+
+检查标准使用 `kind: check`。检查路由把当前 Session 中此类 Skill 的完整正文交给文件
+子 Agent；没有匹配 Skill 时会拒绝执行并要求用户提供审查标准文档，不会回退到代码
+内置规则。Core 只给子 Agent 提供通用 `image_reasoning(prompt, image_paths)`：它不会
+内置检查项、分类、PASS/FAIL 判定或报告格式。一个 Skill 应先用 `## execution` 描述
+如何选择检查项、何时读取文档、如何调用视觉工具和怎样汇总，再定义检查项，例如：
+
+```markdown
+## execution
+
+每张图片与每个适用检查项分别调用 image_reasoning；把本检查项完整规则、必要文档内容
+和严格输出格式都放入 prompt，最后用 write_file 写入 CSV。
+
+## check: unique_item_id | 检查项显示名
+
+applies_to: 流程图, 界面截图
+
+写给检查模型的具体标准，可用 {document} 插入用户文档全文。
+```
+
+`applies_to: *` 表示适用于任何图片。Skill 可以要求视觉模型判断适用性，并把
+`PASS` / `FAIL` / `NA` 等结果协议写在正文中；Core 不解释这些领域语义。批量检查还可
+通过 `## batch` 约定目录扫描和 `batch_plan.json` 格式：短生命周期子 Agent 只生成
+清单并退出，随后每个案例独立执行，避免上下文跨案例累计。
 
 注意事项：
 

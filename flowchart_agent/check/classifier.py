@@ -4,7 +4,7 @@
 1. 图片先过视觉模型生成文字描述（describe_images）；
 2. 文本模型拿"用户需求 + 图片描述 + 检查项清单"做选择——用户明确指定检查项时
    只返回对应项，否则返回 "all"；并顺带提取输入中提到的文件路径。
-检查项清单由 items.items_block() 注入 prompt，实现渐进式披露。
+检查项清单由当前 Session 的检查 Skill 注入 prompt，实现渐进式披露。
 """
 
 from __future__ import annotations
@@ -14,11 +14,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ..cancellation import CancelCheck, OperationCancelled, raise_if_cancelled
 from ..llm import LLMClient
 from .. import prompts
-from .items import items_block
+from .items import CheckItem, items_block
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class Classification:
     doc_paths: list[str] = field(default_factory=list)
     image_paths: list[str] = field(default_factory=list)
     reason: str = ""
+    supported: bool = True
     raw: str = ""  # 模型原始输出（落盘复盘用）
 
 
@@ -41,28 +43,62 @@ class CheckClassifier:
         self._vision = vision_llm
         self._should_cancel = should_cancel
 
-    def describe_images(self, images: list[Path]) -> list[tuple[Path, str]]:
+    def describe_images(
+        self,
+        images: list[Path],
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[tuple[Path, str]]:
         """每张图片 → (路径, 文字描述)。描述失败的图片跳过并记日志。"""
         results = []
-        for img in images:
+        progress = on_progress or (lambda _message: None)
+        total = len(images)
+        for index, img in enumerate(images, 1):
             raise_if_cancelled(self._should_cancel)
+            progress(f"正在描述图片 {index}/{total}：{img.name}…")
             try:
-                desc = self._vision.chat_with_image(
-                    prompts.check.DESCRIBE_IMAGE_PROMPT,
-                    img,
-                    should_cancel=self._should_cancel,
-                )
+                streamed_chars = 0
+                reported_chars = 0
+
+                def report_delta(text: str) -> None:
+                    nonlocal streamed_chars, reported_chars
+                    streamed_chars += len(text)
+                    if streamed_chars - reported_chars >= 120:
+                        reported_chars = streamed_chars
+                        progress(
+                            f"正在描述图片 {index}/{total}：{img.name}；"
+                            f"已接收 {streamed_chars} 字符…"
+                        )
+
+                stream = getattr(self._vision, "chat_with_image_stream", None)
+                if stream is not None:
+                    desc = stream(
+                        prompts.check.DESCRIBE_IMAGE_PROMPT,
+                        img,
+                        on_delta=report_delta,
+                        should_cancel=self._should_cancel,
+                    )
+                else:
+                    desc = self._vision.chat_with_image(
+                        prompts.check.DESCRIBE_IMAGE_PROMPT,
+                        img,
+                        should_cancel=self._should_cancel,
+                    )
             except OperationCancelled:
                 raise
             except Exception as e:
                 logger.warning("[check] 图片描述失败 %s：%s", img, e)
+                progress(f"图片描述 {index}/{total} 失败：{img.name}")
                 continue
             logger.info("[check] 图片描述完成：%s（%d 字符）", img.name, len(desc))
             results.append((img, desc.strip()))
+            progress(f"图片描述完成 {index}/{total}：{img.name}")
         return results
 
     def classify(
-        self, requirement: str, descriptions: list[tuple[Path, str]]
+        self,
+        requirement: str,
+        descriptions: list[tuple[Path, str]],
+        available_items: list[CheckItem],
     ) -> Classification | None:
         """返回分类结果；输出无法解析时返回 None。"""
         if descriptions:
@@ -76,7 +112,7 @@ class CheckClassifier:
                 {
                     "role": "system",
                     "content": prompts.check.CLASSIFY_CHECK_SYSTEM.format(
-                        items_block=items_block()
+                        items_block=items_block(available_items)
                     ),
                 },
                 {
@@ -105,6 +141,7 @@ class CheckClassifier:
             doc_paths=[str(p) for p in data.get("doc_paths") or []],
             image_paths=[str(p) for p in data.get("image_paths") or []],
             reason=data.get("reason", ""),
+            supported=data.get("supported", True) is True,
             raw=reply,
         )
         logger.info(

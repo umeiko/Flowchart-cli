@@ -12,6 +12,7 @@ import re
 
 from .cancellation import CancelCheck, OperationCancelled
 from .llm import LLMClient
+from .skillpacks import SkillPack
 from . import prompts
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,50 @@ def route_category(
     logger.info("[route] 一级分类：%s（%s）", category,
                 json.loads(m.group(0)).get("reason", ""))
     return category
+
+
+def route_generation_skill_relevance(
+    llm: LLMClient,
+    user_input: str,
+    skills: list[SkillPack],
+    should_cancel: CancelCheck = None,
+) -> list[str]:
+    """返回与本轮作图明显无关的已挂载 Skill；判断失败时不误拦截。"""
+    if not skills:
+        return []
+    skills_block = "\n\n".join(
+        (
+            f"name: {pack.name}\nkind: {pack.kind or 'general'}\n"
+            f"description: {pack.description}\n"
+            f"instructions_excerpt: {pack.instructions[:1000]}"
+        )
+        for pack in skills
+    )
+    reply = llm.chat(
+        [
+            {"role": "system", "content": prompts.SKILL_RELEVANCE_SYSTEM},
+            {
+                "role": "user",
+                "content": prompts.SKILL_RELEVANCE_USER.format(
+                    user_input=user_input, skills_block=skills_block
+                ),
+            },
+        ],
+        should_cancel=should_cancel,
+    )
+    match = re.search(r"\{.*\}", reply, re.DOTALL)
+    if not match:
+        logger.warning("[route] Skill 相关性输出无法解析，不拦截作图：%s", reply[:120])
+        return []
+    try:
+        unrelated = json.loads(match.group(0)).get("unrelated") or []
+    except json.JSONDecodeError:
+        logger.warning("[route] Skill 相关性 JSON 解析失败，不拦截作图：%s", reply[:120])
+        return []
+    available = {pack.name for pack in skills}
+    result = sorted({str(name).strip().lower() for name in unrelated} & available)
+    logger.info("[route] 作图 Skill 相关性：无关=%s", result)
+    return result
 
 
 _VALID_TYPES = ("flowchart", "architecture")

@@ -1,7 +1,8 @@
 """主 Agent：对话式调度。通过 function calling 调用 Skill 完成用户意图。
 
 一级路由（router.py）：每条用户输入先分类为 generate / check / chat，
-check 类输入转交 CheckAgent（检查管线，产物落 output/check/），
+check 类输入交给 Check Skill 驱动的文件子 Agent；子 Agent 通过通用
+image_reasoning 工具调用视觉模型，检查流程不写死在 Core 中。
 其余走本模块的 function calling 循环（产物落 output/generate/）。
 
 图片处理（TEXT_MODEL_VISION=true 时）：
@@ -15,22 +16,31 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 from .cancellation import OperationCancelled
-from .check import CheckAgent
+from .check.items import load_check_batch_protocol
 from .config import Settings
 from .images import image_data_url, validate_image
 from .llm import LLMClient
-from .router import route_category
+from .router import route_category, route_generation_skill_relevance
 from .session import DiagramSession
+from .skillpacks import load_skill_packs
 from .skills import Skill, build_skills
+from .skills.builtin import resolve_readable_path
 from .sub_agent import FileSubAgent
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 8
+_BATCH_TERMS = ("批量", "目录", "全部图片", "所有图片", "一批")
+_BATCH_PATH = re.compile(
+    r"(?P<path>(?:[A-Za-z]:[\\/]|(?:workspace|attachments|generate|check)[\\/])"
+    r"[^\s，。；;！？!?\"'<>]+)"
+)
 
 COMPACT_SYSTEM = """你负责压缩 Agent 对话上下文。请把所给历史整理为简洁、可继续工作的中文摘要。
 必须保留：用户目标与约束、已经作出的决定、当前图/文件/路径、工具执行结果、未完成事项、
@@ -81,6 +91,11 @@ MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用
 - 与流程图无关的闲聊：不用工具，简短回答并把话题引回流程图。
 
 规则：
+- 当前会话存在已挂载 Skill 时，作图前必须判断每个挂载 Skill
+  是否与用户本轮作图目标相关。只要存在明显无关的 Skill，就不得调用
+  create_diagram、modify_diagram 或 restyle_diagram；必须拒绝本次作图，点名无关
+  Skill，并请用户先取消挂载或换成相关 Skill。不得静默忽略挂载项。仅在关联性不明确
+  但存在合理用途时继续，并说明采用方式。不要按 Skill 名称或 kind 写死场景判断；
 - 不要自己手写或复述大段 Mermaid 代码，图一律通过工具生成；
 - 工具报错时先自我纠正再重试，至少尝试 2~3 次后再向用户求助。例如文件不存在时：
   利用错误信息里给出的候选路径重试，或用 find_files 按关键词猜测正确文件；
@@ -138,14 +153,15 @@ class MainAgent:
         on_subagent_event: Callable[[str, dict], None] | None = None,
     ):
         self._settings = settings
+        self._session = session
         self._llm = LLMClient(settings.text_model)
         self._vision = settings.text_model_vision
         self._pending = _PendingImages(self._vision)
-        # 检查管线（check 分支）：产物落 <output_root>/check/；懒加载
+        # output_root/readable_root 只负责 Session 文件边界；检查规则来自 Check Skill，
+        # 视觉能力由文件子 Agent 的通用 image_reasoning 工具提供。
         self._output_root = output_root
         self._readable_root = readable_root
         self._readable_roots = readable_roots
-        self._check_agent: CheckAgent | None = None
         self._on_progress = on_progress  # 界面层进度提示（路由/检查项执行）
         # 主模型无视觉能力且配置了视觉模型时，用视觉模型提供 OCR 工具作为替代
         ocr_llm = (
@@ -178,7 +194,8 @@ class MainAgent:
                 name="delegate_task",
                 description=(
                     "启动唯一的文件子 Agent 完成一个独立任务。适合读取/提炼较大文件、"
-                    "跨文件检索、局部文本编辑或图片文字提取，以免大段内容进入主 Agent"
+                    "跨文件检索、局部文本编辑、图片文字提取、独立图片质检或为批量任务"
+                    "生成文件清单，以免大段内容进入主 Agent"
                     "上下文。同一时刻只能运行一个；子 Agent 只拥有受限文件工具，"
                     "最终返回简洁报告。"
                 ),
@@ -287,6 +304,278 @@ class MainAgent:
             ),
         }
 
+    def _batch_plan_path(self) -> tuple[str, Path]:
+        relative = f"batch_plans/batch_plan_{uuid4().hex[:10]}.json"
+        return relative, self._session.output_dir / relative
+
+    def _relative_session_path(self, path: Path) -> str:
+        if self._readable_root is not None:
+            try:
+                return path.resolve().relative_to(Path(self._readable_root).resolve()).as_posix()
+            except ValueError:
+                pass
+        return path.name
+
+    def _find_batch_directory(self, user_input: str) -> Path | None:
+        if not any(term in user_input for term in _BATCH_TERMS):
+            return None
+        for match in _BATCH_PATH.finditer(user_input):
+            try:
+                path = resolve_readable_path(
+                    match.group("path"),
+                    self._readable_root,
+                    self._readable_roots,
+                    allow_root=True,
+                )
+            except ValueError:
+                continue
+            if path.is_dir():
+                return path
+        return None
+
+    def _resolve_batch_case_path(self, raw: str, batch_root: Path) -> Path:
+        """解析规划器给出的相对路径，并强制限制在本次批量目录内。"""
+        value = (raw or "").strip()
+        if not value or Path(value).is_absolute():
+            raise ValueError("计划路径必须是非空的 Session 相对路径")
+        candidates = [value]
+        batch_relative = self._relative_session_path(batch_root)
+        normalized = value.replace("\\", "/")
+        if normalized != batch_relative and not normalized.startswith(batch_relative + "/"):
+            candidates.append(str(Path(batch_relative) / value))
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                path = resolve_readable_path(
+                    candidate,
+                    self._readable_root,
+                    self._readable_roots,
+                )
+                path.relative_to(batch_root)
+                return path
+            except (ValueError, OSError) as exc:
+                last_error = exc
+        raise ValueError(f"路径不在批量目录内：{value}") from last_error
+
+    def _load_batch_plan(self, plan_path: Path, batch_root: Path) -> tuple[list[dict], list[str]]:
+        if not plan_path.is_file():
+            raise ValueError("子 Agent 未按要求写出 batch_plan.json")
+        if plan_path.stat().st_size > 1024 * 1024:
+            raise ValueError("batch_plan.json 超过 1MB，拒绝执行")
+        try:
+            payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"batch_plan.json 不是合法 JSON：{exc}") from exc
+        raw_cases = payload.get("cases") if isinstance(payload, dict) else None
+        if not isinstance(raw_cases, list):
+            raise ValueError("batch_plan.json 缺少 cases 数组")
+        if len(raw_cases) > 100:
+            raise ValueError("批量计划超过 100 个案例，请拆分目录后重试")
+
+        cases: list[dict] = []
+        warnings = [str(item) for item in payload.get("warnings", [])] if isinstance(
+            payload.get("warnings", []), list
+        ) else []
+        seen_ids: set[str] = set()
+        for index, raw_case in enumerate(raw_cases, 1):
+            if not isinstance(raw_case, dict):
+                warnings.append(f"第 {index} 个案例不是对象，已跳过")
+                continue
+            case_id = str(raw_case.get("id") or f"case-{index:03d}").strip()
+            if case_id in seen_ids:
+                case_id = f"{case_id}-{index}"
+            seen_ids.add(case_id)
+            image_raw = raw_case.get("image") or raw_case.get("image_path")
+            documents_raw = raw_case.get("documents", raw_case.get("document", []))
+            if isinstance(documents_raw, str):
+                documents_raw = [documents_raw]
+            if not isinstance(image_raw, str) or not isinstance(documents_raw, list):
+                warnings.append(f"{case_id} 缺少合法 image/documents，已跳过")
+                continue
+            try:
+                image = validate_image(self._resolve_batch_case_path(image_raw, batch_root))
+                documents = []
+                for document_raw in documents_raw:
+                    if not isinstance(document_raw, str):
+                        raise ValueError("documents 只能包含字符串路径")
+                    document = self._resolve_batch_case_path(document_raw, batch_root)
+                    if not document.is_file():
+                        raise ValueError(f"文档不存在：{document_raw}")
+                    documents.append(document)
+            except ValueError as exc:
+                warnings.append(f"{case_id}：{exc}；已跳过")
+                continue
+            cases.append({"id": case_id, "image": image, "documents": documents})
+        if not cases:
+            raise ValueError("batch_plan.json 中没有可执行的有效案例")
+        return cases, warnings
+
+    def _check_skill_instructions(self) -> str:
+        blocks = []
+        for pack in load_skill_packs(self._session.skill_dir).values():
+            if pack.kind == "check":
+                blocks.append(
+                    f"# Check Skill: {pack.name}\n"
+                    f"description: {pack.description}\n\n{pack.instructions}"
+                )
+        return "\n\n---\n\n".join(blocks)
+
+    def _run_skill_check_case(
+        self,
+        requirement: str,
+        images: list[Path],
+        document_paths: list[str] | None = None,
+        *,
+        case_id: str | None = None,
+    ) -> str:
+        """把检查策略交给 Skill + 子 Agent；Core 只提供通用图像推理工具。"""
+        skill_text = self._check_skill_instructions()
+        if not skill_text:
+            return (
+                "无法执行检查：当前 Session 中没有合法的 `kind: check` Skill。"
+                "请先提供或挂载审查标准。"
+            )
+        if "image_reasoning" not in self._subagent.tool_names:
+            return "无法执行检查：当前没有配置可供子 Agent 使用的视觉模型。"
+        label = case_id or f"check-{uuid4().hex[:8]}"
+        image_paths = [self._relative_session_path(path) for path in images]
+        report_relative = f"check_results/{label}/report.csv"
+        task = f"""执行一次图片检查任务。任务的完整操作手册是下方 Check Skill；Core
+不提供检查流程、检查项、适用性、判定或报告规则，不要使用自己的常识补充标准。
+
+用户需求：
+{requirement}
+
+明确提供的图片：{json.dumps(image_paths, ensure_ascii=False)}
+明确提供的文档：{json.dumps(document_paths or [], ensure_ascii=False)}
+建议报告目标（Skill 要求落盘时使用）：{report_relative}
+
+可用能力包含文件工具与通用 image_reasoning(prompt, image_paths)。如何选择和调用它们、
+是否读取文档、调用多少次及如何汇总，全部按 Skill 执行。返回简洁汇总。
+
+以下是当前 Session 提供的全部 Check Skill：
+
+{skill_text}
+"""
+        result = self._subagent.run(
+            task,
+            allowed_tools={
+                "list_dir", "find_files", "grep_files", "read_document",
+                "image_reasoning", "write_file",
+            },
+        )
+        report_path = self._session.output_dir / report_relative
+        if report_path.is_file():
+            return f"{result}\n\n检查报告：generate/{report_relative}"
+        return result
+
+    def _run_batch_check(
+        self,
+        routing_input: str,
+        batch_root: Path,
+    ) -> str:
+        """短生命周期规划器产出清单；主 Agent 再逐案例独立调用检查管线。"""
+        protocol = load_check_batch_protocol(self._session.skill_dir)
+        if not protocol:
+            return (
+                "无法执行批量检查：当前检查 Skill 没有 `## batch` 规划协议。"
+                "请先在 Skill 中说明目录扫描、图文配对和 batch_plan.json 格式。"
+            )
+        batch_path = self._relative_session_path(batch_root)
+        plan_relative, plan_path = self._batch_plan_path()
+        task = f"""你只负责规划本次批量图片质检，不执行任何图片质检，写完计划后立即结束。
+
+用户需求：{routing_input}
+批量目录：{batch_path}
+计划文件（必须用 write_file 写到这个精确路径）：{plan_relative}
+
+本次只允许：
+1. 用 list_dir 扫描批量目录；若存在子目录，可继续对必要子目录调用 list_dir。
+2. 只有文件名和目录结构不足以确定配对时，才用 read_document 读取必要文档；不要通读长文档。
+3. 按下面 Skill 协议生成 JSON，并用 write_file 写入计划文件。
+4. 写入成功后立即结束；不要调用 image_reasoning、read_image、ocr_image，也不要给出检查结论。
+
+JSON 顶层格式：
+{{"version":1,"directory":"{batch_path}","cases":[{{"id":"case-001","image":"{batch_path}/example.png","documents":["{batch_path}/example.md"]}}],"warnings":[]}}
+所有路径必须是当前 Session 相对路径，cases 中每张图片只出现一次。
+
+当前 Check Skill 的批量协议：
+{protocol}
+"""
+        if self._on_progress:
+            self._on_progress("已识别批量质检，子 Agent 正在生成执行清单…")
+        planner_reply = self._subagent.run(
+            task,
+            allowed_tools={"list_dir", "read_document", "write_file"},
+        )
+        if self._should_cancel and self._should_cancel():
+            raise OperationCancelled()
+        try:
+            cases, warnings = self._load_batch_plan(plan_path, batch_root.resolve())
+        except ValueError as exc:
+            return f"批量规划失败：{exc}\n\n子 Agent 返回：{planner_reply[:500]}"
+
+        if self._on_progress:
+            self._on_progress(
+                f"批量清单已生成（{len(cases)} 个案例）；子 Agent 已结束，开始逐项独立质检…"
+            )
+        results: list[dict] = []
+        totals = {"passed": 0, "failed": 0, "not_applicable": 0}
+        for index, case in enumerate(cases, 1):
+            if self._should_cancel and self._should_cancel():
+                raise OperationCancelled()
+            image_relative = self._relative_session_path(case["image"])
+            document_relatives = [
+                self._relative_session_path(path) for path in case["documents"]
+            ]
+            if self._on_progress:
+                self._on_progress(
+                    f"执行计划项 {index}/{len(cases)}：{case['id']} · {case['image'].name}…"
+                )
+            case_requirement = (
+                f"{routing_input}\n\n只处理批量计划中的案例 {case['id']}；"
+                "不要扫描或处理其它案例。"
+            )
+            result = self._run_skill_check_case(
+                case_requirement,
+                [case["image"]],
+                document_relatives,
+                case_id=case["id"],
+            )
+            match = re.search(
+                r"通过\s+(\d+)\s+项，不通过\s+(\d+)\s+项，不符合该分类\s+(\d+)\s+项",
+                result,
+            )
+            if match:
+                totals["passed"] += int(match.group(1))
+                totals["failed"] += int(match.group(2))
+                totals["not_applicable"] += int(match.group(3))
+            results.append({
+                "id": case["id"],
+                "image": image_relative,
+                "documents": document_relatives,
+                "result": result,
+            })
+
+        summary_relative = plan_relative.replace(".json", "_summary.json")
+        summary_path = self._session.output_dir / summary_relative
+        summary_path.write_text(json.dumps({
+            "version": 1,
+            "plan": f"generate/{plan_relative}",
+            "cases": results,
+            "totals": totals,
+            "warnings": warnings,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        lines = [
+            f"批量质检完成：独立处理 {len(results)} 个案例；通过 {totals['passed']} 项，"
+            f"不通过 {totals['failed']} 项，不符合该分类 {totals['not_applicable']} 项。",
+            f"批量计划：generate/{plan_relative}",
+            f"汇总结果：generate/{summary_relative}",
+        ]
+        if warnings:
+            lines.append("规划提示：" + "；".join(warnings[:5]))
+        return "\n".join(lines)
+
     def chat(self, user_input: str, images: list[Path] | None = None) -> str:
         # 主模型无视觉能力时，图片路径仍随消息进入对话，由 ocr_image 提取文字
         history_text = user_input
@@ -300,30 +589,36 @@ class MainAgent:
         )
 
         # 一级路由：check 类输入转交检查管线，不进入对话上下文
+        routing_input = user_input.split(
+            "\n\n[系统提供的当前客户端挂载资源]", 1
+        )[0].split("\n\n[系统提供的本轮用户附件]", 1)[0]
         try:
             category = route_category(
                 self._llm,
-                user_input,
+                routing_input,
                 has_images=bool(images),
                 should_cancel=self._should_cancel,
             )
         except OperationCancelled:
             return self._cancelled_reply()
         if category == "check":
-            if self._check_agent is None and self._output_root is not None:
-                self._check_agent = CheckAgent(
-                    self._settings,
-                    self._output_root,
-                    readable_root=self._readable_root,
-                    readable_roots=self._readable_roots,
-                    should_cancel=self._should_cancel,
-                )
-            if self._check_agent is not None:
-                if self._on_progress:
-                    self._on_progress("已路由到文档检查，正在分析素材…")
+            if self._output_root is not None:
+                batch_root = self._find_batch_directory(user_input)
+                if batch_root is not None:
+                    try:
+                        reply = self._run_batch_check(
+                            routing_input, batch_root
+                        )
+                    except OperationCancelled:
+                        return self._cancelled_reply()
+                    self._messages.extend([
+                        {"role": "user", "content": history_text},
+                        {"role": "assistant", "content": reply},
+                    ])
+                    return reply
                 try:
-                    reply = self._check_agent.handle(
-                        user_input, images or [], on_progress=self._on_progress
+                    reply = self._run_skill_check_case(
+                        user_input, images or []
                     )
                 except OperationCancelled:
                     return self._cancelled_reply()
@@ -335,6 +630,52 @@ class MainAgent:
                 ])
                 return reply
             logger.warning("[route] 无 output_root，check 分支回退主 Agent 流程")
+
+        if category == "generate":
+            active_skills = self._session.active_skill_packs()
+            preflight_log: list[str] = []
+            if active_skills and self._on_progress:
+                self._on_progress("正在检查已挂载 Skill 与本轮作图需求是否相关…")
+            if active_skills:
+                started = (
+                    "Skill 相关性检查开始：已挂载="
+                    + "、".join(pack.name for pack in active_skills)
+                )
+                preflight_log.append(started)
+                self._session.record_generation_preflight(started)
+            try:
+                unrelated = route_generation_skill_relevance(
+                    self._llm,
+                    routing_input,
+                    active_skills,
+                    should_cancel=self._should_cancel,
+                )
+            except OperationCancelled:
+                if active_skills:
+                    cancelled = "Skill 相关性检查取消：用户停止了当前请求"
+                    self._session.record_generation_preflight(cancelled)
+                return self._cancelled_reply()
+            if active_skills:
+                result_log = (
+                    "Skill 相关性检查结果：发现明显无关 Skill=" + "、".join(unrelated)
+                    if unrelated
+                    else "Skill 相关性检查结果：全部相关，可以继续作图"
+                )
+                preflight_log.append(result_log)
+                self._session.record_generation_preflight(result_log)
+            if unrelated:
+                names = "、".join(unrelated)
+                reply = (
+                    f"暂时不能为你作图：当前挂载了与绘图明显无关的 Skill：{names}。"
+                    "你是不是漏取消选择了？请先在 Skills 中取消挂载，再重新发送作图需求。"
+                )
+                self._messages.extend([
+                    {"role": "user", "content": history_text},
+                    {"role": "assistant", "content": reply},
+                ])
+                return reply
+            if preflight_log:
+                self._session.queue_generation_preflight(preflight_log)
 
         self._messages.append({"role": "user", "content": history_text})
         override = None
@@ -364,6 +705,7 @@ class MainAgent:
             if self._should_cancel and self._should_cancel():
                 return self._cancelled_reply()
             if not msg.tool_calls:
+                self._session.clear_generation_preflight()
                 self._messages.append({"role": "assistant", "content": msg.content or ""})
                 logger.info("[chat] 助手回复（%d 字符）", len(msg.content or ""))
                 return msg.content or ""
@@ -397,9 +739,11 @@ class MainAgent:
                 note = f"[系统] 以下是 read_image 读取的 {len(pending)} 张图片："
                 self._messages.append({"role": "user", "content": note})
                 override = self._multimodal_message(note, pending)
+        self._session.clear_generation_preflight()
         return "（连续工具调用次数过多，本次请求已中止，请换个说法再试）"
 
     def _cancelled_reply(self) -> str:
+        self._session.clear_generation_preflight()
         reply = "生成已停止。已保留停止前最后一轮成功渲染的候选图。"
         self._messages.append({"role": "assistant", "content": reply})
         return reply
@@ -447,3 +791,6 @@ class MainAgent:
         except Exception as e:  # 工具失败不应中断对话，把错误交还给模型处理
             logger.exception("skill %s 执行异常", name)
             return f"错误：工具执行失败：{e}"
+        finally:
+            if name in {"create_diagram", "modify_diagram", "restyle_diagram"}:
+                self._session.clear_generation_preflight()

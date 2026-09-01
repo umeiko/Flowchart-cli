@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from .. import __version__
 from ..config import Settings
@@ -67,15 +68,15 @@ def _session_view(session: SessionState) -> SessionView:
     )
 
 
-def _run_view(run: RunState) -> RunView:
+def _run_view(run: RunState, service: AgentService) -> RunView:
     return RunView(
         id=run.id,
         session_id=run.session_id,
         status=run.status,
         created_at=run.created_at,
         completed_at=run.completed_at,
-        reply=run.reply,
-        error=run.error,
+        reply=service.web_text(run.session_id, run.reply),
+        error=service.web_text(run.session_id, run.error),
     )
 
 
@@ -327,12 +328,24 @@ def create_app(
     @app.get("/v1/sessions/{session_id}/workspace/files/download", tags=["workspace"])
     def download_workspace_file(session_id: str, path: str = Query(min_length=1)):
         try:
-            file_path = service.workspace_file(session_id, path)
+            download_path, temporary = service.workspace_download(session_id, path)
         except ValueError as exc:
             raise HTTPException(403, str(exc)) from exc
         except FileNotFoundError as exc:
-            raise HTTPException(404, f"文件不存在：{path}") from exc
-        return FileResponse(file_path, filename=file_path.name, media_type="application/octet-stream")
+            raise HTTPException(404, f"文件或目录不存在：{path}") from exc
+        if temporary:
+            source_name = Path(path.replace("\\", "/")).name or "directory"
+            return FileResponse(
+                download_path,
+                filename=f"{source_name}.zip",
+                media_type="application/zip",
+                background=BackgroundTask(download_path.unlink, missing_ok=True),
+            )
+        return FileResponse(
+            download_path,
+            filename=download_path.name,
+            media_type="application/octet-stream",
+        )
 
     @app.post(
         "/v1/sessions/{session_id}/workspace/entries",
@@ -441,8 +454,12 @@ def create_app(
 
     @app.get("/v1/sessions/{session_id}/messages", response_model=list[MessageView], tags=["sessions"])
     def session_messages(session_id: str) -> list[MessageView]:
+        get_session(session_id)
         rows = store.messages(session_id)
-        return [MessageView(role=row["role"], content=row["content"],
+        return [MessageView(role=row["role"], content=(
+                                service.web_text(session_id, row["content"])
+                                if row["role"] == "assistant" else row["content"]
+                            ),
                             attachments=json.loads(row["attachments"]), created_at=row["created_at"])
                 for row in rows]
 
@@ -498,14 +515,14 @@ def create_app(
             run = service.create_run(session_id, payload.input, payload.attachments)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return _run_view(run)
+        return _run_view(run, service)
 
     @app.get("/v1/runs/{run_id}", response_model=RunView, tags=["runs"])
     def read_run(run_id: str, request: Request) -> RunView:
         run = get_run(run_id)
         if store.session(run.session_id, request.state.user["id"]) is None:
             raise HTTPException(404, "Run 不存在或无权访问")
-        return _run_view(run)
+        return _run_view(run, service)
 
     @app.get(
         "/v1/sessions/{session_id}/active-run",
@@ -514,14 +531,14 @@ def create_app(
     )
     def active_run(session_id: str) -> RunView | None:
         run = service.active_run(session_id)
-        return _run_view(run) if run else None
+        return _run_view(run, service) if run else None
 
     @app.post("/v1/runs/{run_id}/cancel", response_model=RunView, tags=["runs"])
     def cancel_run(run_id: str, request: Request) -> RunView:
         run = get_run(run_id)
         if store.session(run.session_id, request.state.user["id"]) is None:
             raise HTTPException(404, "Run 不存在或无权访问")
-        return _run_view(service.cancel_run(run_id))
+        return _run_view(service.cancel_run(run_id), service)
 
     @app.get("/v1/runs/{run_id}/events", tags=["runs"])
     async def stream_events(
@@ -543,7 +560,16 @@ def create_app(
                 events = run.events_after(cursor)
                 for event in events:
                     cursor = event["id"]
-                    payload = json.dumps(event, ensure_ascii=False)
+                    def web_value(value):
+                        if isinstance(value, str):
+                            return service.web_text(run.session_id, value)
+                        if isinstance(value, list):
+                            return [web_value(item) for item in value]
+                        if isinstance(value, dict):
+                            return {key: web_value(item) for key, item in value.items()}
+                        return value
+
+                    payload = json.dumps(web_value(event), ensure_ascii=False)
                     yield f"id: {event['id']}\nevent: {event['type']}\ndata: {payload}\n\n"
                 if run.status in {"completed", "failed", "cancelled"} and not run.events_after(cursor):
                     return

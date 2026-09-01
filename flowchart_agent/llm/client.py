@@ -334,6 +334,22 @@ class LLMClient:
             self.with_images(messages, image_paths), should_cancel=should_cancel
         )
 
+    def chat_with_images_stream(
+        self,
+        messages: list[dict],
+        image_paths: list[str | Path],
+        on_delta,
+        on_reasoning=None,
+        should_cancel: CancelCheck = None,
+    ) -> str:
+        """流式带图对话；正文增量用于长时间视觉任务的进度展示。"""
+        return self.chat_stream(
+            self.with_images(messages, image_paths),
+            on_delta=on_delta,
+            on_reasoning=on_reasoning,
+            should_cancel=should_cancel,
+        )
+
     def chat_with_image(
         self, prompt: str, image_path: str | Path,
         should_cancel: CancelCheck = None,
@@ -341,5 +357,21 @@ class LLMClient:
         """带图对话：把本地图片以 base64 data URL 随 prompt 一起发送。"""
         return self.chat_with_images(
             [{"role": "user", "content": prompt}], [image_path],
+            should_cancel=should_cancel,
+        )
+
+    def chat_with_image_stream(
+        self,
+        prompt: str,
+        image_path: str | Path,
+        on_delta,
+        on_reasoning=None,
+        should_cancel: CancelCheck = None,
+    ) -> str:
+        return self.chat_with_images_stream(
+            [{"role": "user", "content": prompt}],
+            [image_path],
+            on_delta=on_delta,
+            on_reasoning=on_reasoning,
             should_cancel=should_cancel,
         )

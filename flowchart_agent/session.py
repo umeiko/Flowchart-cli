@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -19,7 +20,7 @@ from .drawio import (
 from .images import validate_image
 from .mermaid import render_mermaid
 from .styles import Style, get_style, load_styles
-from .skillpacks import get_skill_pack, load_skill_packs
+from .skillpacks import SkillPack, get_skill_pack, load_skill_packs
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class DiagramSession:
         # 注入需求文本直通生成子模型
         self._skill_hints: dict[str, str] = {}
         self._active_skill_names: set[str] = set()
+        self._pending_generation_log: list[str] = []
         # 界面层的流式文本回调（生成阶段实时显示）；None = 非流式
         self.on_delta: Callable[[str], None] | None = None
         # 界面层的思考流回调（推理模型 reasoning_content，仅提示用）；None = 不需要
@@ -196,6 +198,42 @@ class DiagramSession:
             f"- {p.name}：{p.description}" for p in packs.values()
         )
 
+    @property
+    def skill_dir(self) -> Path | None:
+        """当前会话的 Skill 目录；None 表示使用系统默认目录。"""
+        return self._skill_dir
+
+    def active_skill_packs(self) -> list[SkillPack]:
+        """返回当前已启用的合法 Skill，供任务相关性路由使用。"""
+        packs = load_skill_packs(self._skill_dir)
+        return [packs[name] for name in sorted(self._active_skill_names) if name in packs]
+
+    def record_generation_preflight(self, message: str) -> None:
+        """记录作图前置判断；无论任务是否获准生成，都写入 generate/run.log。"""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with (self._output_dir / "run.log").open("a", encoding="utf-8") as log:
+            log.write(f"{timestamp} INFO {message}\n")
+        logger.info(message)
+
+    def queue_generation_preflight(self, messages: list[str]) -> None:
+        """把已通过的前置判断带入下一次 v<n>/run.log。"""
+        self._pending_generation_log.extend(messages)
+
+    def clear_generation_preflight(self) -> None:
+        """本轮未进入生成或工具提前失败时，避免日志串到下一轮。"""
+        self._pending_generation_log.clear()
+
+    def _flush_generation_preflight(self, run_dir: Path) -> None:
+        if not self._pending_generation_log:
+            return
+        run_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with (run_dir / "run.log").open("a", encoding="utf-8") as log:
+            for message in self._pending_generation_log:
+                log.write(f"{timestamp} INFO {message}\n")
+        self._pending_generation_log.clear()
+
     def use_skill(self, name: str) -> str:
         """读取技能包完整指引（use_skill 工具的 handler）。
 
@@ -209,7 +247,8 @@ class DiagramSession:
             return f"错误：{e}"
         note = ""
         self._active_skill_names.add(pack.name)
-        generation_hint = pack.prompt_hint or pack.instructions
+        # 检查 Skill 由 check 路由直接解析，不应把审查规则注入作图子模型。
+        generation_hint = "" if pack.kind == "check" else (pack.prompt_hint or pack.instructions)
         if generation_hint:
             self._skill_hints[pack.name] = generation_hint
             note += (
@@ -414,6 +453,7 @@ class DiagramSession:
         visual_verification: bool | None = None,
     ) -> str:
         run_dir = self._next_run_dir()
+        self._flush_generation_preflight(run_dir)
         if initial_code:
             action = f"modify_diagram(修改意见：{initial_feedback[:100]})"
         else:

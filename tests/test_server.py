@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import sqlite3
 import time
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +27,17 @@ def _settings() -> Settings:
         text_model=ModelConfig(name="test", api_key="test", base_url="http://localhost/v1"),
         output_engine="mermaid",
         verify_mode="code",
+    )
+
+
+def _vision_settings() -> Settings:
+    return Settings(
+        text_model=ModelConfig(name="test", api_key="test", base_url="http://localhost/v1"),
+        vision_model=ModelConfig(
+            name="vision-test", api_key="test", base_url="http://localhost/v1"
+        ),
+        output_engine="mermaid",
+        verify_mode="full",
     )
 
 
@@ -92,6 +105,41 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         "output": Path("web-output"),
         "data": Path("web-data"),
     }
+
+
+def test_workspace_directory_download_returns_zip(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "directory-download-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    base = f"/v1/sessions/{session_id}/workspace"
+    assert client.post(
+        f"{base}/entries", json={"path": "workspace/docs", "type": "directory"}
+    ).status_code == 201
+    assert client.post(
+        f"{base}/entries", json={"path": "workspace/docs/empty-dir", "type": "directory"}
+    ).status_code == 201
+    assert client.post(
+        f"{base}/entries", json={"path": "workspace/docs/readme.txt", "type": "file"}
+    ).status_code == 201
+
+    response = client.get(f"{base}/files/download?path=workspace/docs")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "docs.zip" in response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert set(archive.namelist()) == {
+            "docs/", "docs/empty-dir/", "docs/readme.txt",
+        }
+        assert archive.read("docs/readme.txt") == b""
+    assert client.get(f"{base}/files/download?path=../outside").status_code == 403
+
+    script = client.get("/static/app.js").text
+    assert 'target.type === "directory" ? "下载目录（ZIP）" : "下载文件"' in script
+    assert 'target.type === "directory" ? `${target.name}.zip` : target.name' in script
 
 
 def test_server_mvp_flow(tmp_path):
@@ -280,6 +328,43 @@ def test_unknown_attachment_is_rejected(tmp_path):
     assert response.status_code == 400
 
 
+def test_web_messages_hide_server_paths_and_link_session_files(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "web-path-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    state = app.state.agent_service.get_session(session_id)
+    report = state.root / "check" / "v1" / "report.csv"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("item,result\ncheck,PASS\n", encoding="utf-8")
+    raw_reply = f"检查完成。完整报告（CSV）：{report}"
+    app.state.store.add_message(session_id, "assistant", raw_reply)
+
+    content = client.get(f"/v1/sessions/{session_id}/messages").json()[0]["content"]
+
+    assert str(state.root) not in content
+    assert "[check/v1/report.csv](workspace-file:check%2Fv1%2Freport.csv)" in content
+    assert app.state.store.messages(session_id)[0]["content"] == raw_reply
+
+    state.agent.chat = lambda _prompt, images=None: raw_reply
+    run_id = client.post(
+        f"/v1/sessions/{session_id}/runs", json={"input": "检查"}
+    ).json()["id"]
+    for _ in range(100):
+        run = client.get(f"/v1/runs/{run_id}").json()
+        if run["status"] == "completed":
+            break
+        time.sleep(0.005)
+    events = client.get(f"/v1/runs/{run_id}/events").text
+
+    assert str(state.root) not in run["reply"]
+    assert "workspace-file:check%2Fv1%2Freport.csv" in run["reply"]
+    assert str(state.root) not in events
+    assert "workspace-file:check%2Fv1%2Freport.csv" in events
+
+
 def test_tool_call_details_keep_request_and_full_result(tmp_path):
     app = create_app(
         _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
@@ -320,6 +405,34 @@ def test_tool_call_details_keep_request_and_full_result(tmp_path):
     assert "toolDetailResult.textContent" in script
     assert "ui.messages.insertBefore(node, beforeNode)" in script
     assert 'payload.data.arguments ?? "", assistant' in script
+    assert 'image_reasoning: "图像推理"' in script
+    assert "action.liveReasoning" in script
+    assert "payload.data.reasoning_delta" in script
+    assert "payload.data.output_delta" in script
+    assert "activeToolDetail === action" in script
+    assert 'addAgentAction("subagent_task", "subagent", task, assistant)' in script
+    assert 'isSubagentTask ? "子 Agent 思考" : "视觉模型推理"' in script
+    assert "subagentTaskAction.liveReasoning" in script
+    assert "subagentTaskAction.liveOutput" in script
+    assert "finishSubagentEvent" in script
+    assert "【最终返回】" in script
+
+
+def test_web_workspace_has_csv_table_preview(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    html = client.get("/").text
+    script = client.get("/static/app.js").text
+    stylesheet = client.get("/static/app.css").text
+
+    assert 'id="csv-view"' in html
+    assert "function parseCsv(" in script
+    assert "renderCsvPreview(text)" in script
+    assert 'ext === "csv"' in script
+    assert ".csv-table-wrap" in stylesheet
+    assert ".csv-table thead th" in stylesheet
 
 
 def test_create_diagram_can_skip_visual_verification(tmp_path, monkeypatch):
@@ -432,9 +545,11 @@ def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
     assert "inside.md" in find_result and "size=" in find_result
     assert "SESSION_ONLY_MARKER" in grep_result and "[19 B]" in grep_result
     assert "delegate_task" in tools
+    assert "list_dir" in tools
     assert "32KB" in tools["read_document"].description
     assert state.agent._subagent.tool_names == {
-        "read_document", "find_files", "grep_files", "write_file", "replace_in_file"
+        "list_dir", "read_document", "find_files", "grep_files", "write_file",
+        "replace_in_file",
     }
     assert state.agent._subagent._run_lock.acquire(blocking=False)
     try:
@@ -493,6 +608,12 @@ def test_file_subagent_runs_restricted_tool_loop_and_emits_events(tmp_path):
     subagent = state.agent._subagent
     target = state.root / "workspace" / "large.md"
     target.write_text("IMPORTANT_FINDING", encoding="utf-8")
+    nested = state.root / "workspace" / "batch" / "flowchart"
+    nested.mkdir(parents=True)
+    (state.root / "workspace" / "batch" / "requirements.txt").write_text(
+        "requirements", encoding="utf-8"
+    )
+    (nested / "too-deep.txt").write_text("hidden at depth 3", encoding="utf-8")
     events = []
     subagent._on_event = lambda event, data: events.append((event, data))
     calls = 0
@@ -529,6 +650,97 @@ def test_file_subagent_runs_restricted_tool_loop_and_emits_events(tmp_path):
     ]
     tool_result = next(data["result"] for event, data in events if event == "tool.completed")
     assert "large.md" in tool_result and "size=" in tool_result
+    tree = subagent._skills["list_dir"].handler(directory="workspace")
+    assert "workspace/\n" in tree
+    assert "├── batch/" in tree
+    assert "requirements.txt (12 B)" in tree
+    assert "flowchart/" in tree
+    assert "too-deep.txt" not in tree
+
+
+def test_file_subagent_can_limit_tools_for_short_planning_task(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "subagent-planner-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    subagent = app.state.agent_service.get_session(session_id).agent._subagent
+    captured = {}
+
+    def fake_chat(messages, tools, **_kwargs):
+        captured["tool_names"] = {
+            tool["function"]["name"] for tool in tools
+        }
+        return SimpleNamespace(content="规划完成", tool_calls=[])
+
+    subagent._llm.chat_with_tools_stream = fake_chat
+
+    result = subagent.run(
+        "只生成计划",
+        allowed_tools={"list_dir", "read_document", "write_file"},
+    )
+
+    assert result == "规划完成"
+    assert captured["tool_names"] == {"list_dir", "read_document", "write_file"}
+    assert subagent._execute(
+        "grep_files", '{"pattern":"x"}', allowed_tools={"list_dir"}
+    ) == "错误：本次子 Agent 任务无权使用工具 grep_files"
+
+
+def test_file_subagent_image_reasoning_is_generic_and_streams_tool_detail(tmp_path):
+    app = create_app(
+        _vision_settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "subagent-check-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    state = app.state.agent_service.get_session(session_id)
+    subagent = state.agent._subagent
+    image = state.root / "workspace" / "screen.jpg"
+    image.write_bytes(b"fixture")
+    captured = {}
+    events = []
+
+    def fake_reasoning(messages, images, on_delta, on_reasoning, should_cancel=None):
+        captured.update(messages=messages, images=images)
+        on_reasoning("先识别界面区域")
+        on_delta("PASS\n界面状态正确")
+        return "PASS\n界面状态正确"
+
+    subagent._image_reasoning_llm.chat_with_images_stream = fake_reasoning
+    subagent._on_event = lambda event, data: events.append((event, data))
+
+    result = subagent._skills["image_reasoning"].handler(
+        prompt="只按给定标准检查界面状态，首行输出 PASS/FAIL/NA",
+        image_paths=["workspace/screen.jpg"],
+    )
+
+    assert "image_reasoning" in subagent.tool_names
+    assert captured["images"] == [image.resolve()]
+    assert captured["messages"][0]["content"].startswith("只按给定标准")
+    assert result == "PASS\n界面状态正确"
+    assert events == [
+        (
+            "tool.progress",
+            {
+                "name": "image_reasoning",
+                "message": "视觉模型推理中 · 7 字符",
+                "reasoning_delta": "先识别界面区域",
+            },
+        ),
+        (
+            "tool.progress",
+            {
+                "name": "image_reasoning",
+                "message": "视觉模型输出中 · 11 字符",
+                "output_delta": "PASS\n界面状态正确",
+            },
+        ),
+    ]
+    description = subagent._skills["image_reasoning"].description
+    assert "不内置检查项" in description
+    assert "PASS/FAIL" in description
 
 
 def test_sessions_are_isolated_between_users(tmp_path):
@@ -701,7 +913,14 @@ def test_resource_mounts_persist_and_activate_core(tmp_path):
     session_id = first.post("/v1/sessions", json={}).json()["id"]
     skills = first.get(f"/v1/sessions/{session_id}/client/skills").json()
     styles = first.get(f"/v1/sessions/{session_id}/client/styles").json()
-    skill_file = skills[0]["name"]
+    skill_file = next(
+        item["name"]
+        for item in skills
+        if parse_skill_pack_text(
+            (first_app.state.agent_service.get_session(session_id).root
+             / "client" / "skills" / item["name"]).read_text(encoding="utf-8")
+        ).kind != "check"
+    )
     style_file = styles[0]["name"]
 
     assert first.patch(
@@ -724,6 +943,8 @@ def test_resource_mounts_persist_and_activate_core(tmp_path):
     mounted_prompt = first_app.state.agent_service.mounted_prompt(first_state)
     assert "用户明确要求加载 Skill" in mounted_prompt
     assert "必须先调用 use_skill" in mounted_prompt
+    assert "明显无关的 Skill" in mounted_prompt
+    assert "必须拒绝作图" in mounted_prompt
 
     # SQLite is authoritative: a stale in-memory/UI refresh must not erase mounts.
     first_state.mounted_resources = {"skills": set(), "styles": set()}

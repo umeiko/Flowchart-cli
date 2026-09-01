@@ -43,8 +43,8 @@ flowchart TD
 - **风格生成 Agent**：现有模板都不满意时直接说"帮我做一个手绘风格的模板"，`create_style` 工具会自动起草风格插件、校验格式、试渲染，通过后写入 `styles/` 并立即启用
 - **风格转换 Agent**：`换成深色风格`、`按这个文档调整风格` —— 只改样式层不改内容，骨架校验机械保证节点/连线/文字零改动；风格来源可以是现有模板（`style_name`）或口述/文档输入的风格要求（`style_document`）
 - **技能包（Skill Packs）**：`skills/` 目录下每个带 frontmatter 的 `.md` 就是一个提示词型技能，主 Agent 遇到陌生领域任务时自己发现并遵照执行；从社区看到好用的 SKILL，丢进目录即可用。
-- **文档检视**：说"检查这份文档/这张图"即可——先按意图把输入路由到 生成图/检查图 两大类（产物分别落 `output/generate/` 与 `output/check/`）。检查侧由多模态模型先描述图片，主模型按"需求+图片描述"匹配检查项（用户明确指定则只查指定项，否则逐项全查），每项交给对应的检查子 Agent 逐项比对，结论为三值：通过 / 不通过 / 不符合该分类。覆盖：原理图与原理描述一致性、流程图正确性、流程图与操作步骤一致性、组网图正确性、组网图与组网描述一致性、界面截图正确性、界面词一致性、敏感信息（公网 IP、账户等）、截图与操作步骤一致性。报告为 `output/check/v<n>/report.csv`（Excel 可直接打开），原始素材（图片与文档）会复制到同目录 `source/` 下方便溯源。
-- **文件读写**：主 Agent 自带 `write_file` / `replace_in_file` / `grep_files`，可随时调整中间文档或按用户要求输出其它格式文件（写入仅限产物目录内，相对路径自动落在产物目录下）
+- **文档检视**：说"检查这份文档/这张图"即可。检查路由把当前 Session 中 `kind: check` Skill 的完整执行协议交给唯一文件子 Agent；Core 只提供通用流式 `image_reasoning(prompt, image_paths)`，不再写死图片描述、检查项循环或 PASS/FAIL 判定。子 Agent 按 Skill 决定读取哪些文档、如何调用视觉模型及如何写 CSV。WebUI/TUI 把每次图像推理显示为可展开工具，Web 工具详情会实时刷新视觉模型推理和输出。批量任务先由短规划子 Agent 写 `batch_plan.json` 并退出，再逐案例启动独立检查，避免长文档和模型上下文跨案例累计。报告与批量计划位于 `output/generate/check_results/`、`output/generate/batch_plans/`。
+- **文件读写**：主 Agent 与文件子 Agent 共用固定两级 tree 的 `list_dir`，并提供 `write_file` / `replace_in_file` / `grep_files` 等文件工具，可低成本了解批量素材目录结构后再查找或读取（写入仅限产物目录内，相对路径自动落在产物目录下）
 - **命令执行（冒险功能）**：用户明确要求时，主 Agent 可用 `run_command` 跑单行 shell 命令（格式转换、批量处理等）。每条命令默认红框展示、方向键选「是/否」确认，命令统一在产物目录下执行，执行中 Ctrl+C 直接杀掉进程；启动加 `--yolo` 或会话中输入 `/yolo` 可免确认（谨慎）
 
 ## 安装
@@ -123,14 +123,16 @@ uv run flowchart-agent server --host 0.0.0.0 --port 8765 -o output
 Windows 离线包完成 `launcher.exe` 首次配置后，也可直接双击 `launch_server.exe`；
 它会等待服务就绪并按 `SERVER_OPEN_BROWSER` 自动打开网页。
 
-Web 提供登录、头像与用户设置、用户级 Session 管理、历史消息、上下文占用与手动压缩、附件、Skills/Styles 和文件树；主 Agent 还可把大文件检索、阅读和局部编辑委派给单实例文件子 Agent，界面以紫色单独展示其工作过程；可预览
+Web 提供登录、头像与用户设置、用户级 Session 管理、历史消息、上下文占用与手动压缩、附件、Skills/Styles 和文件树；主 Agent 还可把大文件检索、阅读、局部编辑和基于检查 Skill 的图片质检委派给单实例文件子 Agent，界面以紫色单独展示其工作过程；可预览
 Markdown、XML/drawio、文本、PNG/JPEG/WebP 和 SVG。每个 Session 只可访问自己的
 `workspace/`、`attachments/`、`generate/`、`check/`，Agent 文件工具同样受此边界约束。
 
 **过程日志**：每次生成/修改的详细过程（触发动作、每轮生成/渲染/验证、每次 LLM
 请求的耗时与规模、mmdc 命令）写入 `output/generate/v<n>/run.log`（run 模式为
-`output/generate/run.log`）；检查任务的详细过程与报告在 `output/check/v<n>/`
-（run.log + report.md）；chat 模式的全部工具调用另记于会话级 `output/chat.log`。
+`output/generate/run.log`）；Skill 驱动的检查报告写入
+`output/generate/check_results/<case-id>/report.csv`，批量执行清单与汇总写入
+`output/generate/batch_plans/`；chat 模式的全部工具调用另记于会话级
+`output/chat.log`。
 
 ## 实现方案
 
@@ -161,13 +163,13 @@ flowchart_agent/
 │   ├── restyle.py       #   风格转换
 │   ├── ocr.py           #   OCR 工具
 │   ├── route.py         #   一级路由（生成/检查/闲聊）+ 图型二级路由（流程图/架构图）
-│   └── check/           #   检查管线（图像描述/二级分类/四类检查清单）
+│   └── check/           #   旧检查提示词（仅兼容旧执行器）
 ├── router.py            # 分类器（一级意图 + drawio 图型二级路由）
-├── check/               # 检查管线（文档/图片检视）
-│   ├── items.py         #   检查项注册表（渐进式披露的技能清单）
-│   ├── classifier.py    #   二级分类器
-│   ├── item_agent.py    #   ItemCheckAgent：单项检查子 Agent
-│   └── agent.py         #   CheckAgent：编排素材、逐项派发、产出 CSV 报告
+├── check/               # 旧检查执行器（兼容与解析测试；主检查路径由 Skill + image_reasoning 执行）
+│   ├── items.py         #   解析 kind: check Skill 中的动态检查项
+│   ├── classifier.py    #   旧二级分类兼容实现
+│   ├── item_agent.py    #   旧 ItemCheckAgent 兼容实现
+│   └── agent.py         #   旧 CheckAgent 兼容实现
 ├── agent.py             # 生成-渲染-验证子循环（双引擎）
 ├── style_agent.py       # 风格生成子 Agent
 ├── restyle_agent.py     # 风格转换子 Agent

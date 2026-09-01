@@ -20,6 +20,7 @@ const ui = {
   backDiagram: document.querySelector("#back-diagram"),
   openFile: document.querySelector("#open-file"),
   markdownView: document.querySelector("#markdown-view"),
+  csvView: document.querySelector("#csv-view"),
   codeView: document.querySelector("#code-view"),
   sourcePanel: document.querySelector("#source-panel"),
   filebar: document.querySelector(".filebar"),
@@ -185,7 +186,8 @@ function addMessage(text, role = "assistant", files = []) {
   node.className = `message ${role}`;
   const body = document.createElement("div");
   body.className = "message-body";
-  body.textContent = text;
+  if (role === "assistant") body.innerHTML = renderMarkdown(text);
+  else body.textContent = text;
   node.append(body);
   if (files.length) {
     const refs = document.createElement("div");
@@ -210,9 +212,10 @@ function toolLabel(name) {
     use_skill: "加载 Skill", list_styles: "检索 Styles", set_style: "应用 Style",
     create_diagram: "生成流程图", modify_diagram: "修改流程图", restyle_diagram: "调整图表风格",
     create_style: "生成 Style", create_skill: "生成 Skill", set_verification: "调整验证模式",
-    get_current_diagram: "读取当前图", find_files: "查找文件", grep_files: "搜索文件内容",
+    get_current_diagram: "读取当前图", list_dir: "查看目录树", find_files: "查找文件", grep_files: "搜索文件内容",
     write_file: "写入文件", replace_in_file: "修改文件", ocr_image: "识别图片文字",
     run_command: "执行命令", delegate_task: "委派子 Agent", subagent_task: "处理委派任务",
+    image_reasoning: "图像推理",
     write_working_doc: "整理工作文档",
   })[name] || name;
 }
@@ -231,7 +234,22 @@ function renderToolDetail(action) {
   ui.toolDetailTitle.textContent = toolLabel(action.name);
   ui.toolDetailMeta.textContent = `${owner} · ${action.name} · ${status}`;
   ui.toolDetailRequest.textContent = prettyToolData(action.request, "（模型没有提供参数）");
-  ui.toolDetailResult.textContent = prettyToolData(action.result, "工具仍在执行，返回后会自动更新…");
+  let liveResult = "";
+  const isSubagentTask = action.name === "subagent_task";
+  if (action.liveReasoning) {
+    liveResult += `【${isSubagentTask ? "子 Agent 思考" : "视觉模型推理"}】\n${action.liveReasoning}\n\n`;
+  }
+  if (action.liveOutput) {
+    liveResult += `【${isSubagentTask ? "子 Agent 当前输出" : "视觉模型输出"}】\n${action.liveOutput}`;
+  }
+  if (action.result === null) {
+    ui.toolDetailResult.textContent = liveResult || "工具仍在执行，返回后会自动更新…";
+  } else {
+    const finalResult = prettyToolData(action.result, "（工具没有返回内容）");
+    ui.toolDetailResult.textContent = liveResult
+      ? `${liveResult}\n\n【最终返回】\n${finalResult}`
+      : finalResult;
+  }
 }
 
 function openToolDetail(action) {
@@ -257,7 +275,10 @@ function addAgentAction(name, agent = "main", request = null, beforeNode = null)
   if (beforeNode?.parentNode === ui.messages) ui.messages.insertBefore(node, beforeNode);
   else ui.messages.append(node);
   ui.messages.scrollTop = ui.messages.scrollHeight;
-  const action = {node, icon, text, name, agent, request, result: null};
+  const action = {
+    node, icon, text, name, agent, request, result: null,
+    liveReasoning: "", liveOutput: "",
+  };
   if (request !== null) makeToolActionInspectable(action);
   node.addEventListener("click", () => {
     if (node.classList.contains("inspectable")) openToolDetail(action);
@@ -789,8 +810,11 @@ function openFileMenu(target, x, y) {
       (["new-file", "new-directory", "paste"].includes(action) && target.type !== "directory") ||
       (action === "paste" && !fileClipboard) ||
       (["copy", "cut", "rename", "delete"].includes(action) && root) ||
-      (action === "download" && target.type !== "file")
+      (action === "download" && !["file", "directory"].includes(target.type))
     );
+    if (action === "download") {
+      button.textContent = target.type === "directory" ? "下载目录（ZIP）" : "下载文件";
+    }
   }
   ui.fileContextMenu.classList.remove("hidden");
   const width = 168;
@@ -846,7 +870,9 @@ async function executeFileAction(action, target) {
   if (action === "download") {
     const link = document.createElement("a");
     link.href = `/v1/sessions/${sessionId}/workspace/files/download?path=${encodeURIComponent(target.path)}`;
-    link.download = target.name; link.click();
+    link.download = target.type === "directory" ? `${target.name}.zip` : target.name;
+    document.body.appendChild(link); link.click(); link.remove();
+    setStatus(`正在下载：${link.download}`, true);
     return;
   }
   if (action === "delete") {
@@ -1060,27 +1086,133 @@ function renderMarkdown(source) {
     if (heading) {
       if (inList) { html += "</ul>"; inList = false; }
       const level = heading[1].length;
-      html += `<h${level}>${heading[2]}</h${level}>`;
+      html += `<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`;
       continue;
     }
     const item = line.match(/^[-*]\s+(.+)$/);
     if (item) {
       if (!inList) { html += "<ul>"; inList = true; }
-      html += `<li>${item[1]}</li>`;
+      html += `<li>${renderInlineMarkdown(item[1])}</li>`;
       continue;
     }
     if (inList) { html += "</ul>"; inList = false; }
-    if (line.startsWith("&gt; ")) html += `<blockquote>${line.slice(5)}</blockquote>`;
-    else if (line.trim()) html += `<p>${line.replace(/`([^`]+)`/g, "<code>$1</code>")}</p>`;
+    if (line.startsWith("&gt; ")) html += `<blockquote>${renderInlineMarkdown(line.slice(5))}</blockquote>`;
+    else if (line.trim()) html += `<p>${renderInlineMarkdown(line)}</p>`;
   }
   if (inList) html += "</ul>";
   if (inCode) html += "</code></pre>";
   return html;
 }
 
+function renderInlineMarkdown(source) {
+  return source
+    .replace(
+      /\[([^\]]+)\]\(workspace-file:([A-Za-z0-9%._~-]+)\)/g,
+      '<a href="#workspace-file" class="message-file-link" data-workspace-path="$2">$1</a>',
+    )
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+const CSV_PREVIEW_MAX_ROWS = 500;
+const CSV_PREVIEW_MAX_COLUMNS = 80;
+
+function parseCsv(source, maxRows = CSV_PREVIEW_MAX_ROWS, maxColumns = CSV_PREVIEW_MAX_COLUMNS) {
+  const text = source.replace(/^\uFEFF/, "");
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  let rowsTruncated = false;
+  let columnsTruncated = false;
+
+  const finishRow = () => {
+    row.push(field);
+    if (row.length > maxColumns) columnsTruncated = true;
+    rows.push(row.slice(0, maxColumns));
+    row = [];
+    field = "";
+    return rows.length >= maxRows;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '"' && text[index + 1] === '"') {
+        field += '"'; index += 1;
+      } else if (char === '"') quoted = false;
+      else field += char;
+      continue;
+    }
+    if (char === '"' && field === "") quoted = true;
+    else if (char === ",") { row.push(field); field = ""; }
+    else if (char === "\n" || char === "\r") {
+      if (char === "\r" && text[index + 1] === "\n") index += 1;
+      if (finishRow()) {
+        rowsTruncated = index < text.length - 1;
+        break;
+      }
+    } else field += char;
+  }
+  if (!rowsTruncated && (field !== "" || row.length || text.endsWith(","))) finishRow();
+  return {rows, rowsTruncated, columnsTruncated};
+}
+
+function renderCsvPreview(source) {
+  const {rows, rowsTruncated, columnsTruncated} = parseCsv(source);
+  ui.csvView.replaceChildren();
+  const summary = document.createElement("div");
+  summary.className = "csv-preview-summary";
+  if (!rows.length) {
+    summary.textContent = "CSV 文件为空";
+    ui.csvView.append(summary);
+    return;
+  }
+  const columnCount = Math.max(...rows.map(row => row.length));
+  const limited = rowsTruncated || columnsTruncated;
+  summary.textContent = limited
+    ? `已显示前 ${rows.length.toLocaleString()} 行 × ${columnCount.toLocaleString()} 列；完整内容请打开原文件`
+    : `${rows.length.toLocaleString()} 行 × ${columnCount.toLocaleString()} 列`;
+
+  const wrap = document.createElement("div");
+  wrap.className = "csv-table-wrap";
+  const table = document.createElement("table");
+  table.className = "csv-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const corner = document.createElement("th");
+  corner.className = "csv-row-number";
+  corner.textContent = "#";
+  headRow.append(corner);
+  for (const value of rows[0]) {
+    const cell = document.createElement("th");
+    cell.textContent = value;
+    headRow.append(cell);
+  }
+  head.append(headRow);
+  const body = document.createElement("tbody");
+  rows.slice(1).forEach((values, rowIndex) => {
+    const tableRow = document.createElement("tr");
+    const number = document.createElement("th");
+    number.className = "csv-row-number";
+    number.scope = "row";
+    number.textContent = String(rowIndex + 1);
+    tableRow.append(number);
+    for (let column = 0; column < columnCount; column += 1) {
+      const cell = document.createElement("td");
+      cell.textContent = values[column] ?? "";
+      tableRow.append(cell);
+    }
+    body.append(tableRow);
+  });
+  table.append(head, body);
+  wrap.append(table);
+  ui.csvView.append(summary, wrap);
+}
+
 function resetPreviewViews() {
   ui.canvas.classList.add("hidden");
   ui.markdownView.classList.add("hidden");
+  ui.csvView.classList.add("hidden");
   ui.codeView.classList.add("hidden");
   ui.resourceEditor.classList.add("hidden");
   ui.sourcePanel.classList.add("hidden");
@@ -1121,6 +1253,9 @@ async function previewFile(path, button) {
       if (["md", "markdown"].includes(ext)) {
         ui.markdownView.innerHTML = renderMarkdown(text);
         ui.markdownView.classList.remove("hidden");
+      } else if (ext === "csv") {
+        renderCsvPreview(text);
+        ui.csvView.classList.remove("hidden");
       } else {
         ui.codeView.textContent = text;
         ui.codeView.classList.remove("hidden");
@@ -1133,6 +1268,35 @@ async function previewFile(path, button) {
     setStatus("读取失败");
   }
 }
+
+async function openMessageFile(path) {
+  switchSection("workspace");
+  await refreshTree();
+  const button = [...ui.tree.querySelectorAll(".tree-file")]
+    .find(node => node.dataset.path === path);
+  if (!button) throw new Error(`文件不存在或已被删除：${path}`);
+  let parent = button.parentElement;
+  while (parent && parent !== ui.tree) {
+    if (parent.matches?.("details.tree-dir")) parent.open = true;
+    parent = parent.parentElement;
+  }
+  await previewFile(path, button);
+  button.scrollIntoView({block: "nearest"});
+}
+
+ui.messages.addEventListener("click", event => {
+  const link = event.target.closest(".message-file-link");
+  if (!link) return;
+  event.preventDefault();
+  let path;
+  try {
+    path = decodeURIComponent(link.dataset.workspacePath || "");
+  } catch (_) {
+    setStatus("文件链接无效");
+    return;
+  }
+  openMessageFile(path).catch(error => setStatus(error.message));
+});
 
 ui.refreshTree.addEventListener("click", () => {
   const refresh = activeSection === "workspace" ? refreshTree() : refreshResources(activeSection);
@@ -1515,8 +1679,8 @@ function followRun(runId, runSessionId = sessionId) {
   stream.addEventListener("subagent.started", event => {
     if (sessionId !== runSessionId) return;
     const payload = JSON.parse(event.data);
-    subagentTaskAction = addAgentAction("subagent_task", "subagent", null, assistant);
     const task = payload.data.task || "文件任务";
+    subagentTaskAction = addAgentAction("subagent_task", "subagent", task, assistant);
     subagentTaskAction.text.textContent = `子 Agent 已接手：${task.length > 90 ? `${task.slice(0, 90)}…` : task}`;
     subagentTaskAction.node.title = task;
   });
@@ -1530,7 +1694,21 @@ function followRun(runId, runSessionId = sessionId) {
       ui.messages.append(subagentReasoning);
     }
     const lines = subagentReasoningBuffer.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    subagentReasoning.textContent = `子 Agent 思考中 · ${lines.at(-1) || "正在分析文件…"}`;
+    const latest = lines.at(-1) || "正在分析文件…";
+    subagentReasoning.textContent = `子 Agent 思考中 · ${latest}`;
+    if (subagentTaskAction) {
+      subagentTaskAction.liveReasoning = (
+        subagentTaskAction.liveReasoning + (payload.data.text || "")
+      ).slice(-12000);
+      if (activeToolDetail === subagentTaskAction) renderToolDetail(subagentTaskAction);
+    }
+    // 兼容仍在旧服务进程中运行的长工具：旧后端把工具内部进度发成 reasoning.delta。
+    const checkAction = (pendingSubagentTools.get("image_reasoning") || [])[0];
+    if (checkAction && latest) {
+      const visibleLatest = latest.length > 140 ? `…${latest.slice(-140)}` : latest;
+      checkAction.text.textContent = `子 Agent · ${toolLabel("image_reasoning")}：${visibleLatest}`;
+      checkAction.node.title = latest;
+    }
     ui.messages.scrollTop = ui.messages.scrollHeight;
   });
   stream.addEventListener("subagent.delta", event => {
@@ -1545,6 +1723,12 @@ function followRun(runId, runSessionId = sessionId) {
     const lines = subagentOutputBuffer.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const tail = lines.at(-1) || "正在整理结果…";
     subagentOutput.textContent = `子 Agent 输出 · ${tail.length > 120 ? `…${tail.slice(-120)}` : tail}`;
+    if (subagentTaskAction) {
+      subagentTaskAction.liveOutput = (
+        subagentTaskAction.liveOutput + (payload.data.text || "")
+      ).slice(-12000);
+      if (activeToolDetail === subagentTaskAction) renderToolDetail(subagentTaskAction);
+    }
     ui.messages.scrollTop = ui.messages.scrollHeight;
   });
   stream.addEventListener("subagent.tool.started", event => {
@@ -1554,6 +1738,24 @@ function followRun(runId, runSessionId = sessionId) {
     const action = addAgentAction(name, "subagent", payload.data.arguments ?? "", assistant);
     const queue = pendingSubagentTools.get(name) || [];
     queue.push(action); pendingSubagentTools.set(name, queue);
+  });
+  stream.addEventListener("subagent.tool.progress", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    const name = payload.data.name;
+    const queue = pendingSubagentTools.get(name) || [];
+    const action = queue[0];
+    if (!action) return;
+    const message = payload.data.message || "工具执行中…";
+    if (payload.data.reasoning_delta) {
+      action.liveReasoning = (action.liveReasoning + payload.data.reasoning_delta).slice(-12000);
+    }
+    if (payload.data.output_delta) {
+      action.liveOutput = (action.liveOutput + payload.data.output_delta).slice(-12000);
+    }
+    action.text.textContent = `子 Agent · ${toolLabel(name)}：${message}`;
+    action.node.title = message;
+    if (activeToolDetail === action) renderToolDetail(action);
   });
   stream.addEventListener("subagent.tool.completed", event => {
     if (sessionId !== runSessionId) return;
@@ -1569,7 +1771,7 @@ function followRun(runId, runSessionId = sessionId) {
     if (activeToolDetail === action) renderToolDetail(action);
     scheduleWorkspaceRefresh(runSessionId);
   });
-  const finishSubagent = status => {
+  const finishSubagent = (status, data = {}) => {
     if (subagentReasoning) subagentReasoning.classList.add("completed");
     if (subagentOutput) subagentOutput.classList.add("completed");
     if (!subagentTaskAction) return;
@@ -1577,10 +1779,18 @@ function followRun(runId, runSessionId = sessionId) {
     subagentTaskAction.node.classList.add("completed");
     subagentTaskAction.icon.textContent = status === "completed" ? "✓" : "!";
     subagentTaskAction.text.textContent = status === "completed" ? "子 Agent 工作完成" : `子 Agent ${status}`;
+    subagentTaskAction.result = data.result ?? data.error ?? subagentTaskAction.liveOutput ?? "";
+    makeToolActionInspectable(subagentTaskAction);
+    if (activeToolDetail === subagentTaskAction) renderToolDetail(subagentTaskAction);
   };
-  stream.addEventListener("subagent.completed", () => finishSubagent("completed"));
-  stream.addEventListener("subagent.failed", () => finishSubagent("执行失败"));
-  stream.addEventListener("subagent.cancelled", () => finishSubagent("已停止"));
+  const finishSubagentEvent = (event, status) => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    finishSubagent(status, payload.data || {});
+  };
+  stream.addEventListener("subagent.completed", event => finishSubagentEvent(event, "completed"));
+  stream.addEventListener("subagent.failed", event => finishSubagentEvent(event, "执行失败"));
+  stream.addEventListener("subagent.cancelled", event => finishSubagentEvent(event, "已停止"));
   stream.addEventListener("run.completed", async event => {
     if (sessionId !== runSessionId) { stream.close(); return; }
     const payload = JSON.parse(event.data);

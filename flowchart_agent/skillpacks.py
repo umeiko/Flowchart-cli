@@ -29,6 +29,9 @@ class SkillPack:
     # use_skill 时存进会话，create/modify 时注入需求文本——技能正文只有
     # 主 Agent 可见，子模型只认 requirement，长上下文下抄录不可靠
     prompt_hint: str = ""
+    # 可选能力类别。普通 Skill 留空；检查标准使用 kind: check，供检查路由
+    # 确定性发现，而不是把领域检查项继续写死在 Agent 代码中。
+    kind: str = ""
 
 
 def skill_packs_dir() -> Path:
@@ -89,4 +92,5 @@ def parse_skill_pack_text(text: str) -> SkillPack | None:
         instructions=parts[2].strip(),
         layout=meta.get("layout", ""),
         prompt_hint=meta.get("prompt_hint", ""),
+        kind=meta.get("kind", "").strip().lower(),
     )

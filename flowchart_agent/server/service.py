@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import shutil
+import tempfile
 import threading
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from ..cancellation import OperationCancelled
 from ..config import Settings
@@ -194,6 +197,89 @@ class AgentService:
         if not candidate.is_file():
             raise FileNotFoundError(relative_path)
         return candidate
+
+    def workspace_download(self, session_id: str, relative_path: str) -> tuple[Path, bool]:
+        """返回下载目标；目录会打包为临时 ZIP，并由响应层负责删除。"""
+        target = self._workspace_path(session_id, relative_path)
+        if target.is_file():
+            return target, False
+        if not target.is_dir():
+            raise FileNotFoundError(relative_path)
+
+        session_root = self.get_session(session_id).root.resolve()
+        target_root = target.resolve()
+        handle = tempfile.NamedTemporaryFile(
+            prefix="flowchart-directory-", suffix=".zip", delete=False
+        )
+        archive = Path(handle.name)
+        handle.close()
+        try:
+            with zipfile.ZipFile(
+                archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+            ) as output:
+                root_name = target.name
+                output.writestr(f"{root_name}/", b"")
+                for path in sorted(target.rglob("*"), key=lambda item: item.as_posix()):
+                    if path.is_symlink():
+                        continue
+                    resolved = path.resolve(strict=True)
+                    try:
+                        resolved.relative_to(session_root)
+                        resolved.relative_to(target_root)
+                    except ValueError as exc:
+                        raise ValueError("目录中包含超出当前 Session 的路径") from exc
+                    member = Path(root_name, *path.relative_to(target).parts).as_posix()
+                    if path.is_dir():
+                        output.writestr(member.rstrip("/") + "/", b"")
+                    elif path.is_file():
+                        output.write(path, member)
+            return archive, True
+        except Exception:
+            archive.unlink(missing_ok=True)
+            raise
+
+    def web_text(self, session_id: str, content: str | None) -> str | None:
+        """Hide server paths while preserving clickable Session file references for Web clients."""
+        if not content:
+            return content
+        session = self.get_session(session_id)
+        session_root = str(session.root.resolve())
+        root_variants = {session_root, session_root.replace("\\", "/")}
+        if not any(source in content for source in root_variants):
+            return content
+        replacements: list[tuple[str, str]] = []
+        for root_name in self._workspace_roots:
+            root = session.root / root_name
+            if not root.exists():
+                continue
+            for path in (root, *root.rglob("*")):
+                try:
+                    relative = path.resolve().relative_to(session.root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if path.is_file():
+                    replacement = f"[{relative}](workspace-file:{quote(relative, safe='')})"
+                elif path.is_dir():
+                    replacement = f"`{relative}`"
+                else:
+                    continue
+                resolved = str(path.resolve())
+                replacements.extend(
+                    (
+                        (resolved, replacement),
+                        (resolved.replace("\\", "/"), replacement),
+                    )
+                )
+
+        rendered = content
+        for source, replacement in sorted(set(replacements), key=lambda item: len(item[0]), reverse=True):
+            rendered = rendered.replace(source, replacement)
+
+        # Historical messages may reference files that have since been deleted.
+        # Remove the Session root even when no current tree entry can be linked.
+        for source in root_variants:
+            rendered = rendered.replace(source, "当前 Session")
+        return rendered
 
     def create_workspace_entry(self, session_id: str, relative_path: str, entry_type: str) -> Path:
         target = self._workspace_path(session_id, relative_path, must_exist=False, allow_root=False)
@@ -672,6 +758,10 @@ class AgentService:
                         if kind == "skills"
                         else parse_style_text(content)
                     )
+                    # 检查 Skill 由 check 路由按任务动态发现，不进入普通对话/作图
+                    # Prompt，避免审查标准污染生成上下文。
+                    if kind == "skills" and getattr(parsed, "kind", "") == "check":
+                        continue
                     resource_name = parsed.name if parsed is not None else path.stem
                     mandatory = (
                         f"在调用 create_diagram/modify_diagram 之前，必须先调用 "
@@ -689,7 +779,9 @@ class AgentService:
         return (
             "\n\n[系统提供的当前客户端挂载资源]"
             "\n以下资源已由用户明确勾选挂载。本轮必须视为用户明确要求使用，"
-            "调用作图工具时必须遵循；"
+            "调用作图工具时必须遵循。作图前先判断每个挂载的 Skill 与本轮作图目标"
+            "是否相关；只要有明显无关的 Skill，必须拒绝作图、点名该 Skill，并要求"
+            "用户先取消挂载或更换相关 Skill，不得静默忽略；"
             "若与用户本轮明确要求冲突，以用户本轮要求为准。\n"
             + "\n".join(sections)
         )

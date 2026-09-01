@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from ..cancellation import CancelCheck, raise_if_cancelled
 from ..llm import LLMClient
@@ -59,12 +60,17 @@ class ItemCheckAgent:
         images: list[Path],
         kinds: dict[Path, str],
         document: str,
+        on_progress: Callable[[str], None] | None = None,
     ) -> list[ItemResult]:
         """对本项适用的每张图片执行检查，返回逐项结果。"""
         applicable = [
             img for img in images
             if not item.applies_to or not kinds.get(img)
-            or any(k in kinds[img] for k in item.applies_to)
+            or any(
+                expected.casefold() in kinds[img].casefold()
+                or kinds[img].casefold() in expected.casefold()
+                for expected in item.applies_to
+            )
         ]
         if not applicable:
             kinds_seen = "、".join(sorted({kinds.get(i, "未知") for i in images}))
@@ -76,13 +82,37 @@ class ItemCheckAgent:
                 f"（素材类型：{kinds_seen}）",
                 "",
             )]
-        prompt = item.prompt.format(document=document)
+        # Skill 文档可能包含 JSON/代码花括号；只替换约定占位符，避免 str.format
+        # 把审查标准中的其他花括号误当模板字段。
+        prompt = item.prompt.replace("{document}", document)
         results = []
+        progress = on_progress or (lambda _message: None)
         for img in applicable:
             raise_if_cancelled(self._should_cancel)
-            reply = self._vision.chat_with_image(
-                prompt, img, should_cancel=self._should_cancel
-            ).strip()
+            streamed_chars = 0
+            reported_chars = 0
+
+            def report_delta(text: str) -> None:
+                nonlocal streamed_chars, reported_chars
+                streamed_chars += len(text)
+                if streamed_chars - reported_chars >= 120:
+                    reported_chars = streamed_chars
+                    progress(
+                        f"{item.name} · {img.name}：已接收 {streamed_chars} 字符…"
+                    )
+
+            stream = getattr(self._vision, "chat_with_image_stream", None)
+            if stream is not None:
+                reply = stream(
+                    prompt,
+                    img,
+                    on_delta=report_delta,
+                    should_cancel=self._should_cancel,
+                ).strip()
+            else:
+                reply = self._vision.chat_with_image(
+                    prompt, img, should_cancel=self._should_cancel
+                ).strip()
             verdict = _verdict_of(reply)
             findings = _strip_verdict_line(
                 reply, {"通过": "通过", "不符合该分类": "不适用"}.get(verdict, "")

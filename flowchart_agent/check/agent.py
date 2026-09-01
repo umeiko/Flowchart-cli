@@ -12,25 +12,29 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
-from ..cancellation import CancelCheck, raise_if_cancelled
+from ..cancellation import CancelCheck, OperationCancelled, raise_if_cancelled
 from ..config import Settings
 from ..images import validate_image
 from ..llm import LLMClient
 from ..skills.builtin import find_files, read_document, resolve_readable_path
 from .classifier import CheckClassifier, Classification
 from .item_agent import ItemCheckAgent, ItemResult, VERDICT_FAIL, VERDICT_NA, VERDICT_PASS
-from .items import resolve_items
+from .items import load_check_items, resolve_items
 
 logger = logging.getLogger(__name__)
 
 # 图片类型关键词：从图片描述首行推断图片类别
 _KIND_KEYWORDS = ("原理图", "流程图", "组网", "拓扑", "界面截图", "界面")
-
-
+_BATCH_TERMS = ("批量", "目录", "全部图片", "所有图片", "一批")
+_BATCH_PATH = re.compile(
+    r"(?P<path>(?:[A-Za-z]:[\\/]|(?:workspace|attachments|generate|check)[\\/])"
+    r"[^\s，。；;！？!?\"'<>]+)"
+)
 def _infer_kind(description: str) -> str:
     """从图片描述（首行含类型判断）推断图片类别关键词。"""
     head = description[:150]
@@ -49,12 +53,14 @@ class CheckAgent:
         output_root: str | Path,
         readable_root: Path | None = None,
         readable_roots: Iterable[Path] | None = None,
+        skill_dir: Path | None = None,
         should_cancel: CancelCheck = None,
     ):
         self._settings = settings
         self._check_root = Path(output_root) / "check"
         self._readable_root = readable_root
         self._readable_roots = tuple(readable_roots or ())
+        self._skill_dir = skill_dir
         self._should_cancel = should_cancel
         self._text_llm = LLMClient(settings.text_model)
         self._vision_llm = (
@@ -65,11 +71,19 @@ class CheckAgent:
         self,
         user_input: str,
         images: list[Path] | None = None,
+        document_paths: list[str] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> str:
         """检查管线入口，返回给用户的回复文本。on_progress 为界面层进度回调。"""
         progress = on_progress or (lambda _msg: None)
         raise_if_cancelled(self._should_cancel)
+        available_items = load_check_items(self._skill_dir)
+        if not available_items:
+            return (
+                "无法执行检查：当前 Session 的 Skills 中没有合法的检查 Skill。"
+                "系统不会使用内置或臆造的审查标准。请提供审查标准文档，或在 Skills "
+                "中导入带 `kind: check` 和检查条目的 Skill 后重试。"
+            )
         if self._vision_llm is None:
             return (
                 "检查功能需要视觉模型支持，但当前未配置 VISION_MODEL_*。"
@@ -84,20 +98,27 @@ class CheckAgent:
         # 1. 图片描述（技术路线第一步）+ 二级分类（技术路线第二步）
         if images:
             progress(f"正在描述 {len(images)} 张图片的内容…")
-        descriptions = classifier.describe_images(images)
+        descriptions = classifier.describe_images(images, progress)
         progress("正在匹配检查项…")
-        cls = classifier.classify(user_input, descriptions)
+        cls = classifier.classify(user_input, descriptions, available_items)
         if cls is None:
             return "没能确定要执行哪些检查，请换个说法再试（如：只检查敏感信息）。"
+        if not cls.supported:
+            return (
+                "无法执行这项检查：当前 Session 中没有与需求匹配的检查 Skill，"
+                "系统不会猜测审查标准。请提供一份审查标准文档（至少说明检查对象、"
+                "检查项、适用范围和通过/不通过判定），再导入为检查 Skill。"
+            )
 
         # 2. 收集素材：输入文本中提到的路径 + 用户直接贴入的图片
-        docs, doc_paths, doc_errors = self._load_documents(cls.doc_paths)
+        requested_docs = list(dict.fromkeys([*cls.doc_paths, *(document_paths or [])]))
+        docs, doc_paths, doc_errors = self._load_documents(requested_docs)
         extra_images, img_errors = self._load_images(cls.image_paths)
         known = {p.resolve() for p in images}
         new_images = [p for p in extra_images if p.resolve() not in known]
         if new_images:
             progress(f"正在描述 {len(new_images)} 张图片的内容…")
-            descriptions.extend(classifier.describe_images(new_images))
+            descriptions.extend(classifier.describe_images(new_images, progress))
             images.extend(new_images)
         errors = doc_errors + img_errors
 
@@ -108,7 +129,12 @@ class CheckAgent:
                 + ("\n\n素材加载问题：\n" + "\n".join(errors) if errors else "")
             )
 
-        selected = resolve_items(cls.items)
+        selected = resolve_items(cls.items, available_items)
+        if not selected:
+            return (
+                "无法执行这项检查：检查路由没有从当前 Session 的检查 Skill 中匹配到"
+                "有效检查项。请提供审查标准文档，或补充对应检查 Skill 后重试。"
+            )
         progress(
             "已匹配检查项：" + "、".join(i.name for i in selected)
             if cls.items != "all" else "未指定检查项，逐项全部检查…"
@@ -138,7 +164,9 @@ class CheckAgent:
             for item in selected:
                 raise_if_cancelled(self._should_cancel)
                 progress(f"正在执行：{item.name}…")
-                item_results = item_agent.run(item, images, kinds, document)
+                item_results = item_agent.run(
+                    item, images, kinds, document, on_progress=progress
+                )
                 for r in item_results:
                     if r.raw:
                         img_stem = r.image.stem if r.image else "na"
@@ -171,6 +199,35 @@ class CheckAgent:
         return "\n".join(lines)
 
     # ---------- 素材收集 ----------
+
+    def find_batch_directory(
+        self, user_input: str, explicit: str | Path | None = None
+    ) -> Path | None:
+        """从批量请求中解析一个受 Session 边界保护的目录。"""
+        if explicit is None and not any(term in user_input for term in _BATCH_TERMS):
+            return None
+        candidates = [str(explicit)] if explicit is not None else [
+            match.group("path") for match in _BATCH_PATH.finditer(user_input)
+        ]
+        for raw in candidates:
+            try:
+                path = resolve_readable_path(
+                    raw, self._readable_root, self._readable_roots, allow_root=True
+                )
+            except ValueError:
+                continue
+            if path.is_dir():
+                return path
+        return None
+
+    def relative_path(self, path: Path) -> str:
+        """返回供 Agent 与 WebUI 使用的 Session 相对路径，避免泄露服务端路径。"""
+        if self._readable_root is not None:
+            try:
+                return path.resolve().relative_to(Path(self._readable_root).resolve()).as_posix()
+            except ValueError:
+                pass
+        return path.name
 
     def _load_documents(self, paths: list[str]) -> tuple[list[str], list[Path], list[str]]:
         """读文档；路径不存在时按文件名关键词 find_files 自我纠正一次。
@@ -253,14 +310,17 @@ def _copy_sources(run_dir: Path, images: list[Path], doc_paths: list[Path]) -> i
     return copied
 
 
-def _write_report_csv(csv_path: Path, results: list[ItemResult]) -> None:
+def _write_report_csv(
+    csv_path: Path, results: list[ItemResult], result_cases: dict[int, str] | None = None
+) -> None:
     """逐项检查报告：检查项 / 图片 / 结果（通过/不通过/不符合该分类）/ 问题说明。
     UTF-8 with BOM，Excel 直接打开不乱码。"""
     with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["检查项", "检查项ID", "图片", "结果", "问题/说明"])
+        writer.writerow(["案例", "检查项", "检查项ID", "图片", "结果", "问题/说明"])
         for r in results:
             writer.writerow([
+                (result_cases or {}).get(id(r), "-"),
                 r.item.name,
                 r.item.id,
                 r.image.name if r.image else "-",

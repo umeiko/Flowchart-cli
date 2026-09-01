@@ -18,6 +18,7 @@ from .base import Skill
 _MAX_DOC_BYTES = 200 * 1024
 _MAX_FIND_RESULTS = 20
 _MAX_GREP_RESULTS = 50
+_MAX_LIST_ENTRIES = 200
 _MAX_FIND_WALK = 5000  # 最多遍历的文件数，防止在大目录里卡死
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 
@@ -266,6 +267,76 @@ def find_files(
     return "找到以下文件：\n" + "\n".join(matches)
 
 
+def list_dir(
+    directory: str = ".",
+    root: Path | None = None,
+    readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
+) -> str:
+    """以固定两级 tree 展示目录；文件附带大小，不读取文件内容。"""
+    raise_if_cancelled(should_cancel)
+    try:
+        roots = _search_roots(directory, root, readable_roots)
+    except ValueError as e:
+        return f"错误：{e}"
+    if not roots or not all(search_root.is_dir() for search_root in roots):
+        return f"错误：目录不存在：{directory}"
+
+    boundary = Path(root).resolve() if root is not None else None
+    lines: list[str] = []
+    listed = 0
+    truncated = False
+
+    def label(search_root: Path) -> str:
+        if boundary is not None:
+            try:
+                relative = search_root.resolve().relative_to(boundary)
+                return relative.as_posix() or "."
+            except ValueError:
+                pass
+        supplied = Path(directory)
+        return supplied.as_posix() if len(roots) == 1 else search_root.name
+
+    def visible_children(parent: Path) -> list[Path]:
+        try:
+            return sorted(
+                (
+                    child for child in parent.iterdir()
+                    if child.name not in _SKIP_DIRS and not child.name.startswith(".")
+                ),
+                key=lambda child: (not child.is_dir(), child.name.casefold()),
+            )
+        except OSError:
+            return []
+
+    def render(parent: Path, prefix: str, level: int) -> None:
+        nonlocal listed, truncated
+        children = visible_children(parent)
+        for index, child in enumerate(children):
+            raise_if_cancelled(should_cancel)
+            if listed >= _MAX_LIST_ENTRIES:
+                truncated = True
+                return
+            last = index == len(children) - 1
+            branch = "└── " if last else "├── "
+            suffix = "/" if child.is_dir() else f" ({_format_file_size(child.stat().st_size)})"
+            lines.append(f"{prefix}{branch}{child.name}{suffix}")
+            listed += 1
+            if child.is_dir() and level < 2:
+                render(child, prefix + ("    " if last else "│   "), level + 1)
+                if truncated:
+                    return
+
+    for search_root in roots:
+        lines.append(f"{label(search_root).rstrip('/')}/")
+        render(search_root, "", 1)
+        if truncated:
+            break
+    if truncated:
+        lines.append(f"…（已达 {_MAX_LIST_ENTRIES} 个条目上限）")
+    return "\n".join(lines)
+
+
 def _make_ocr_handler(
     llm: LLMClient,
     root: Path | None = None,
@@ -351,6 +422,29 @@ def build_skills(
             },
             handler=partial(
                 read_document, root=readable_root, readable_roots=readable_roots,
+                should_cancel=should_cancel,
+            ),
+        ),
+        Skill(
+            name="list_dir",
+            description=(
+                "以 tree 形式列出目录的两级结构，目录优先、文件附带大小；"
+                "不读取文件内容，适合在查找、批量处理或委派前了解素材组织方式。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "当前可读范围内要查看的目录，默认列出可读根目录",
+                        "default": ".",
+                    },
+                },
+            },
+            handler=partial(
+                list_dir,
+                root=readable_root,
+                readable_roots=readable_roots,
                 should_cancel=should_cancel,
             ),
         ),

@@ -106,7 +106,8 @@ _HELP = """\
 - **切换出图引擎**：说"切换到 drawio 模式"，或直接输入 `/engine drawio`；
   drawio 模式自动按文档路由流程图/架构图两套管线，配色遵循 `styles/` 模板
 - **检查文档/图片**，如：检查 test_datas/check/flowchart/2.txt 里的流程图和操作步骤是否一致（图在 2.jpg）——
-  支持原理图/流程图/组网图/界面截图四类检查（产物在 `output/check/`）
+  按当前 Session 挂载的 `kind: check` Skill 执行，报告写入
+  `output/generate/check_results/`
 - **拖入任意文件**（文档/草图/现有流程图截图等）：自动变成彩色 `[文件:文件名]` 芯片，
   提交时还原为完整路径发给模型；其中图片文件在开启 `TEXT_MODEL_VISION` 时
   还会作为图片随消息发给模型；
@@ -146,7 +147,7 @@ def run_chat(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
 
 
 def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
-    # 产物分目录：生成侧 output/generate/，检查侧 output/check/（由 CheckAgent 管理）
+    # 生成与 Skill 驱动的检查报告都写在 output/generate/ 下。
     session = DiagramSession(settings, output_dir / "generate")
     display = _StreamDisplay(console)
     display.engine = session.engine
@@ -169,7 +170,7 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         on_tick=display.tick,  # 工具参数增量 → token 用量估算
         on_reasoning=display.show_reasoning,  # 思考流 → "思考中"提示
         output_root=output_dir,
-        on_progress=display.set_status,  # 检查管线的路由/进度提示
+        on_progress=display.set_status,  # 路由、批量规划与逐案例调度进度
         command_runner=runner,
         should_cancel=cancel_event.is_set,
         on_subagent_event=lambda event, data: _show_subagent_event(display, event, data),
@@ -513,6 +514,8 @@ def _show_subagent_event(display: _StreamDisplay, event: str, data: dict) -> Non
         console.print(
             f"[bright_magenta]↳ 子 Agent 调用 {data.get('name', 'tool')}({args})[/bright_magenta]"
         )
+    elif event == "tool.progress":
+        display.set_status(f"子 Agent · {data.get('message', '工具执行中…')}")
     elif event == "tool.completed":
         console.print(
             f"[magenta]↳ 子 Agent 已完成 {data.get('name', 'tool')}[/magenta]"

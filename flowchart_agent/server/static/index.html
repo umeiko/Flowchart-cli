@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flowchart Agent</title>
-  <link rel="stylesheet" href="/static/app.css?v=tool-details">
+  <link rel="stylesheet" href="/static/app.css?v=csv-preview">
 </head>
 <body>
   <main class="shell">
@@ -80,6 +80,7 @@
         </div>
         <div id="canvas" class="canvas empty">生成完成后，流程图会出现在这里。</div>
         <article id="markdown-view" class="document-view hidden"></article>
+        <section id="csv-view" class="csv-view hidden" aria-label="CSV 表格预览"></section>
         <pre id="code-view" class="code-view hidden"></pre>
         <textarea id="resource-editor" class="resource-editor hidden" spellcheck="false"></textarea>
         <details id="source-panel">
@@ -163,6 +164,6 @@
   <dialog id="delete-session-dialog" class="resource-dialog danger-dialog">
     <form id="delete-session-form"><p class="eyebrow">DANGER ZONE</p><h2>永久删除会话？</h2><p id="delete-session-message" class="dialog-warning"></p><p class="dialog-help">会话历史、附件、生成文件及客户端资源将被永久删除，此操作不可恢复。</p><div class="dialog-actions"><button id="delete-session-cancel" class="text-button" type="button">取消</button><button class="danger-confirm" type="submit">永久删除</button></div></form>
   </dialog>
-  <script src="/static/app.js?v=fast-verify-tool-order" defer></script>
+  <script src="/static/app.js?v=csv-preview" defer></script>
 </body>
 </html>
