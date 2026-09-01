@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..cancellation import CancelCheck, OperationCancelled, raise_if_cancelled
 from ..llm import LLMClient
 from .. import prompts
 from .items import items_block
@@ -32,16 +33,27 @@ class Classification:
 
 
 class CheckClassifier:
-    def __init__(self, text_llm: LLMClient, vision_llm: LLMClient):
+    def __init__(
+        self, text_llm: LLMClient, vision_llm: LLMClient,
+        should_cancel: CancelCheck = None,
+    ):
         self._text = text_llm
         self._vision = vision_llm
+        self._should_cancel = should_cancel
 
     def describe_images(self, images: list[Path]) -> list[tuple[Path, str]]:
         """每张图片 → (路径, 文字描述)。描述失败的图片跳过并记日志。"""
         results = []
         for img in images:
+            raise_if_cancelled(self._should_cancel)
             try:
-                desc = self._vision.chat_with_image(prompts.check.DESCRIBE_IMAGE_PROMPT, img)
+                desc = self._vision.chat_with_image(
+                    prompts.check.DESCRIBE_IMAGE_PROMPT,
+                    img,
+                    should_cancel=self._should_cancel,
+                )
+            except OperationCancelled:
+                raise
             except Exception as e:
                 logger.warning("[check] 图片描述失败 %s：%s", img, e)
                 continue
@@ -73,7 +85,8 @@ class CheckClassifier:
                         requirement=requirement, descriptions_block=block
                     ),
                 },
-            ]
+            ],
+            should_cancel=self._should_cancel,
         )
         m = re.search(r"\{.*\}", reply, re.DOTALL)
         if not m:

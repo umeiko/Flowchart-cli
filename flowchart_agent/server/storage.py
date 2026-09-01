@@ -40,7 +40,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS agent_sessions (
               id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
               title TEXT NOT NULL, engine TEXT NOT NULL, verification_mode TEXT NOT NULL,
-              style TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+              style TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              context_summary TEXT, context_cutoff_id INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_updated
               ON agent_sessions(user_id, updated_at DESC);
@@ -68,6 +69,16 @@ class Store:
                 db.execute("ALTER TABLE users ADD COLUMN avatar BLOB")
             if "avatar_mime" not in user_columns:
                 db.execute("ALTER TABLE users ADD COLUMN avatar_mime TEXT")
+            session_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(agent_sessions)").fetchall()
+            }
+            if "context_summary" not in session_columns:
+                db.execute("ALTER TABLE agent_sessions ADD COLUMN context_summary TEXT")
+            if "context_cutoff_id" not in session_columns:
+                db.execute(
+                    "ALTER TABLE agent_sessions ADD COLUMN context_cutoff_id INTEGER NOT NULL DEFAULT 0"
+                )
             db.execute("PRAGMA optimize")
 
     @staticmethod
@@ -169,8 +180,12 @@ class Store:
     def save_session(self, session_id: str, user_id: str, title: str, engine: str, mode: str, style=None):
         now = _now()
         with self.connect() as db:
-            db.execute("INSERT INTO agent_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       (session_id, user_id, title, engine, mode, style, now, now))
+            db.execute(
+                "INSERT INTO agent_sessions"
+                "(id,user_id,title,engine,verification_mode,style,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (session_id, user_id, title, engine, mode, style, now, now),
+            )
 
     def sessions(self, user_id: str) -> list[dict]:
         with self.connect() as db:
@@ -208,8 +223,40 @@ class Store:
 
     def messages(self, session_id: str) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute("SELECT role,content,attachments,created_at FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+            rows = db.execute("SELECT id,role,content,attachments,created_at FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def context_messages(self, session_id: str) -> tuple[str | None, list[dict]]:
+        with self.connect() as db:
+            session = db.execute(
+                "SELECT context_summary,context_cutoff_id FROM agent_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                raise KeyError(session_id)
+            rows = db.execute(
+                "SELECT id,role,content,attachments,created_at FROM messages "
+                "WHERE session_id=? AND id>? ORDER BY id",
+                (session_id, session["context_cutoff_id"] or 0),
+            ).fetchall()
+        return session["context_summary"], [dict(row) for row in rows]
+
+    def save_context_summary(
+        self, session_id: str, summary: str, retained_messages: int
+    ) -> None:
+        with self.connect() as db:
+            ids = [
+                row["id"] for row in db.execute(
+                    "SELECT id FROM messages WHERE session_id=? ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+            ]
+            cutoff = ids[-retained_messages - 1] if len(ids) > retained_messages else 0
+            db.execute(
+                "UPDATE agent_sessions SET context_summary=?,context_cutoff_id=?,updated_at=? "
+                "WHERE id=?",
+                (summary, cutoff, _now(), session_id),
+            )
 
     def resource_mounts(self, session_id: str) -> dict[str, set[str]]:
         with self.connect() as db:

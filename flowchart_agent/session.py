@@ -329,6 +329,7 @@ class DiagramSession:
         image_path: str | None = None,
         background: str | None = None,
         style: str | None = None,
+        visual_verification: bool = True,
         node_width=None,
         node_height=None,
         gap_x=None,
@@ -336,9 +337,10 @@ class DiagramSession:
     ) -> str:
         logger.info(
             "create_diagram 参数：requirement=%d字符 image=%s background=%s "
-            "style=%s node_width=%s node_height=%s gap_x=%s gap_y=%s",
+            "style=%s visual_verification=%s node_width=%s node_height=%s gap_x=%s gap_y=%s",
             len(requirement), image_path or "无", background or "无",
-            style or "无", node_width, node_height, gap_x, gap_y,
+            style or "无", visual_verification,
+            node_width, node_height, gap_x, gap_y,
         )
         try:
             tool_grid = make_flow_grid(
@@ -370,7 +372,12 @@ class DiagramSession:
             self._background_override = background
             self.requirement += f"\n\n（画布背景色要求：{background}）"
         self._inject_skill_hints()
-        return self._run(initial_code="", initial_feedback="", reference_image=reference)
+        return self._run(
+            initial_code="",
+            initial_feedback="",
+            reference_image=reference,
+            visual_verification=visual_verification,
+        )
 
     def _inject_skill_hints(self) -> None:
         """把已读技能包的 prompt_hint 注入需求文本（直通生成子模型）。
@@ -386,7 +393,7 @@ class DiagramSession:
         if hints:
             self.requirement += "\n\n（附加作图要求：" + "；".join(hints) + "）"
 
-    def modify(self, instruction: str) -> str:
+    def modify(self, instruction: str, visual_verification: bool = True) -> str:
         if not self.has_diagram:
             return "还没有生成过流程图，请先描述需求创建一张图。"
         self.requirement += f"\n\n追加修改要求：{instruction}"
@@ -396,6 +403,7 @@ class DiagramSession:
             initial_code=self.current_code,
             initial_feedback=instruction,
             reference_image=self.current_image,
+            visual_verification=visual_verification,
         )
 
     def _run(
@@ -403,6 +411,7 @@ class DiagramSession:
         initial_code: str,
         initial_feedback: str,
         reference_image: Path | None = None,
+        visual_verification: bool | None = None,
     ) -> str:
         run_dir = self._next_run_dir()
         if initial_code:
@@ -411,8 +420,12 @@ class DiagramSession:
             action = (
                 f"create_diagram(需求 {len(self.requirement)} 字符"
                 + (f"，参考图 {reference_image}" if reference_image else "")
+                + ("，跳过视觉验证" if visual_verification is False else "")
                 + ")"
             )
+        effective_verify_mode = (
+            "none" if visual_verification is False else self.verify_mode
+        )
         result = self._agent.run(
             self.requirement,
             run_dir,
@@ -423,7 +436,7 @@ class DiagramSession:
             style=self.effective_style,
             on_delta=self.on_delta,
             on_reasoning=self.on_reasoning,
-            verify_mode=self.verify_mode,
+            verify_mode=effective_verify_mode,
             on_round_start=self.on_round_start,
             on_stage=self.on_stage,
             action=action,
@@ -461,9 +474,14 @@ class DiagramSession:
                 f"达到最大轮次（{len(result.rounds)} 轮）未通过验证，{note}\n"
                 f"最后的验证意见：{feedback}",
             )
+        success_note = (
+            f"成功（{len(result.rounds)} 轮渲染完成，已按要求跳过视觉验证）。"
+            if effective_verify_mode == "none"
+            else f"成功（{len(result.rounds)} 轮通过验证）。"
+        )
         return self._publish(
             result.mermaid_code, result.image_path, run_dir,
-            f"成功（{len(result.rounds)} 轮通过验证）。",
+            success_note,
         )
 
     def restyle(self, style_name: str | None = None, style_document: str | None = None) -> str:

@@ -123,7 +123,7 @@ uv run flowchart-agent server --host 0.0.0.0 --port 8765 -o output
 Windows 离线包完成 `launcher.exe` 首次配置后，也可直接双击 `launch_server.exe`；
 它会等待服务就绪并按 `SERVER_OPEN_BROWSER` 自动打开网页。
 
-Web 提供登录、头像与用户设置、用户级 Session 管理、历史消息、附件、Skills/Styles 和文件树；可预览
+Web 提供登录、头像与用户设置、用户级 Session 管理、历史消息、上下文占用与手动压缩、附件、Skills/Styles 和文件树；主 Agent 还可把大文件检索、阅读和局部编辑委派给单实例文件子 Agent，界面以紫色单独展示其工作过程；可预览
 Markdown、XML/drawio、文本、PNG/JPEG/WebP 和 SVG。每个 Session 只可访问自己的
 `workspace/`、`attachments/`、`generate/`、`check/`，Agent 文件工具同样受此边界约束。
 

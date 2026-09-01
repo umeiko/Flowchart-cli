@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import runtime
+from ..cancellation import CancelCheck, run_cancellable_process
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def render_mermaid(
     chrome_path: str | None = None,
     scale: str | None = None,
     width: str | None = None,
+    should_cancel: CancelCheck = None,
 ) -> RenderResult:
     """把 Mermaid 代码写入 <output_dir>/<stem>.mmd，预检后用 mmdc 渲染为 <stem>.<fmt>。
 
@@ -79,7 +81,7 @@ def render_mermaid(
     mmd_path.write_text(code, encoding="utf-8")
 
     # 快速语法预检：失败直接返回，省掉一次 Chromium 渲染
-    parse_error = _quick_parse_check(mmd_path)
+    parse_error = _quick_parse_check(mmd_path, should_cancel=should_cancel)
     if parse_error is not None:
         return RenderResult(ok=False, mmd_path=mmd_path, error=f"[语法预检] {parse_error}")
 
@@ -88,7 +90,10 @@ def render_mermaid(
     if fmt == "png" and width == "auto":
         # 探测：默认视口渲 SVG，从 SVG 读出图的自然宽度
         svg_path = output_dir / f"{stem}.svg"
-        probe_error = _run_mmdc(mmd_path, svg_path, background, chrome_path, fmt="svg")
+        probe_error = _run_mmdc(
+            mmd_path, svg_path, background, chrome_path, fmt="svg",
+            should_cancel=should_cancel,
+        )
         natural = _svg_natural_width(svg_path) if probe_error is None else None
         if natural is None:
             resolved_width = None  # 探测失败退回 mmdc 默认视口
@@ -101,6 +106,7 @@ def render_mermaid(
     error = _run_mmdc(
         mmd_path, image_path, background, chrome_path,
         scale=scale, fmt=fmt, width=resolved_width,
+        should_cancel=should_cancel,
     )
     if error is not None:
         return RenderResult(ok=False, mmd_path=mmd_path, error=error)
@@ -115,18 +121,19 @@ def _run_mmdc(
     scale: str | None = None,
     fmt: str = "png",
     width: str | None = None,
+    should_cancel: CancelCheck = None,
 ) -> str | None:
     """执行一次 mmdc 渲染。返回 None 表示成功，否则返回错误文本。"""
     cmd = _mmdc_command(mmd_path, image_path, background, chrome_path, scale, fmt, width)
     logger.debug("[render] 执行命令：%s", " ".join(cmd))
-    proc = subprocess.run(
+    proc = run_cancellable_process(
         cmd,
-        capture_output=True,
         # node/mmdc 的输出是 UTF-8；Windows 中文环境的默认 GBK 解码遇到
         # UTF-8 字节会炸 reader 线程，stderr 变 None（曾导致 AttributeError）
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        should_cancel=should_cancel,
     )
     if proc.returncode != 0 or not image_path.exists():
         return (proc.stderr or proc.stdout or "mmdc 渲染失败且无输出").strip()
@@ -193,21 +200,23 @@ def _mmdc_command(
     return cmd
 
 
-def _quick_parse_check(mmd_path: Path) -> str | None:
+def _quick_parse_check(
+    mmd_path: Path, should_cancel: CancelCheck = None
+) -> str | None:
     """mermaid.parse 预检。返回 None 表示通过（或预检不可用，交给 mmdc 兜底）。"""
     node = runtime.find_node()
     script = runtime.parse_script()
     if node is None or script is None:
         return None
     try:
-        proc = subprocess.run(
+        proc = run_cancellable_process(
             [node, str(script), str(mmd_path)],
-            capture_output=True,
             # node 输出为 UTF-8；显式指定编码避免 Windows GBK 区域设置下
             # 解码失败导致 stderr 为 None（reader 线程崩溃）
             encoding="utf-8",
             errors="replace",
             timeout=30,
+            should_cancel=should_cancel,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None  # 预检自身故障不应阻塞主流程

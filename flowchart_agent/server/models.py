@@ -37,6 +37,18 @@ class UserView(BaseModel):
     avatar_url: str | None = None
 
 
+class ContextView(BaseModel):
+    used_tokens: int
+    message_tokens: int
+    tool_tokens: int
+    limit_tokens: int
+    percent: float
+    message_count: int
+    compressed: bool = False
+    before_tokens: int | None = None
+    reason: str | None = None
+
+
 class SessionTitlePatch(BaseModel):
     title: str = Field(min_length=1, max_length=80)
 

@@ -16,6 +16,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
+from ..cancellation import CancelCheck, raise_if_cancelled
 from ..config import Settings
 from ..images import validate_image
 from ..llm import LLMClient
@@ -48,11 +49,13 @@ class CheckAgent:
         output_root: str | Path,
         readable_root: Path | None = None,
         readable_roots: Iterable[Path] | None = None,
+        should_cancel: CancelCheck = None,
     ):
         self._settings = settings
         self._check_root = Path(output_root) / "check"
         self._readable_root = readable_root
         self._readable_roots = tuple(readable_roots or ())
+        self._should_cancel = should_cancel
         self._text_llm = LLMClient(settings.text_model)
         self._vision_llm = (
             LLMClient(settings.vision_model) if settings.vision_model else None
@@ -66,12 +69,16 @@ class CheckAgent:
     ) -> str:
         """检查管线入口，返回给用户的回复文本。on_progress 为界面层进度回调。"""
         progress = on_progress or (lambda _msg: None)
+        raise_if_cancelled(self._should_cancel)
         if self._vision_llm is None:
             return (
                 "检查功能需要视觉模型支持，但当前未配置 VISION_MODEL_*。"
                 "请在 .env 中配置视觉模型后再试。"
             )
-        classifier = CheckClassifier(self._text_llm, self._vision_llm)
+        classifier = CheckClassifier(
+            self._text_llm, self._vision_llm,
+            should_cancel=self._should_cancel,
+        )
         images = list(images or [])
 
         # 1. 图片描述（技术路线第一步）+ 二级分类（技术路线第二步）
@@ -124,9 +131,12 @@ class CheckAgent:
 
             document = "\n\n".join(docs) if docs else "（未提供文档文本）"
             kinds = {p: _infer_kind(desc) for p, desc in descriptions}
-            item_agent = ItemCheckAgent(self._vision_llm)
+            item_agent = ItemCheckAgent(
+                self._vision_llm, should_cancel=self._should_cancel
+            )
             results: list[ItemResult] = []
             for item in selected:
+                raise_if_cancelled(self._should_cancel)
                 progress(f"正在执行：{item.name}…")
                 item_results = item_agent.run(item, images, kinds, document)
                 for r in item_results:
@@ -181,7 +191,8 @@ class CheckAgent:
                     readable_roots=self._readable_roots,
                 )
                 candidates = [
-                    l for l in found.splitlines()[1:] if l.strip()
+                    l.split(" | size=", 1)[0]
+                    for l in found.splitlines()[1:] if l.strip()
                 ] if found.startswith("找到") else []
                 if len(candidates) == 1:
                     logger.info("[check] 路径纠正：%s -> %s", path, candidates[0])

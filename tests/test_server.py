@@ -10,12 +10,13 @@ from fastapi.testclient import TestClient
 
 from flowchart_agent.config import ModelConfig, Settings
 from flowchart_agent.agent import FlowchartAgent
+from flowchart_agent import agent as agent_module
 from flowchart_agent import cli as cli_module
 from flowchart_agent.server import create_app
 from flowchart_agent.server.storage import Store
 from flowchart_agent.session import DiagramSession
 from flowchart_agent.skillpacks import parse_skill_pack_text
-from flowchart_agent.skills.builtin import find_files, read_document
+from flowchart_agent.skills.builtin import build_skills, find_files, read_document
 from flowchart_agent.styles import parse_style_text
 
 
@@ -279,6 +280,133 @@ def test_unknown_attachment_is_rejected(tmp_path):
     assert response.status_code == 400
 
 
+def test_tool_call_details_keep_request_and_full_result(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "tool-detail-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    state = app.state.agent_service.get_session(session_id)
+    full_result = "RESULT-" + ("x" * 2500)
+
+    def fake_chat(_prompt, images=None):
+        state.agent._on_tool_call("read_document", '{"path":"workspace/brief.md"}')
+        state.agent._on_tool_result("read_document", full_result)
+        return "done"
+
+    state.agent.chat = fake_chat
+    created = client.post(
+        f"/v1/sessions/{session_id}/runs", json={"input": "inspect tool"}
+    )
+    run_id = created.json()["id"]
+    for _ in range(100):
+        run = client.get(f"/v1/runs/{run_id}").json()
+        if run["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    events = app.state.agent_service.get_run(run_id).events
+    started = next(event for event in events if event["type"] == "tool.started")
+    completed = next(event for event in events if event["type"] == "tool.completed")
+    assert started["data"]["arguments"] == '{"path":"workspace/brief.md"}'
+    assert completed["data"]["result"] == full_result
+
+    html = client.get("/").text
+    script = client.get("/static/app.js").text
+    assert 'id="tool-detail-dialog"' in html
+    assert "openToolDetail(action)" in script
+    assert "toolDetailRequest.textContent" in script
+    assert "toolDetailResult.textContent" in script
+    assert "ui.messages.insertBefore(node, beforeNode)" in script
+    assert 'payload.data.arguments ?? "", assistant' in script
+
+
+def test_create_diagram_can_skip_visual_verification(tmp_path, monkeypatch):
+    session = DiagramSession(_settings(), tmp_path / "generate")
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["verify_mode"] = kwargs["verify_mode"]
+        return SimpleNamespace(
+            success=True,
+            cancelled=False,
+            mermaid_code="flowchart TD\nA-->B",
+            image_path=None,
+            rounds=[SimpleNamespace(image_path=None)],
+        )
+
+    monkeypatch.setattr(session._agent, "run", fake_run)
+    monkeypatch.setattr(session, "_publish", lambda code, image, run_dir, note: note)
+
+    reply = session.create("简单画一下，尽快给我", visual_verification=False)
+
+    assert captured["verify_mode"] == "none"
+    assert "已按要求跳过视觉验证" in reply
+    images = SimpleNamespace(add=lambda path: path)
+    tools = {item.name: item for item in build_skills(session, images)}
+    parameter = tools["create_diagram"].parameters["properties"]["visual_verification"]
+    assert parameter["type"] == "boolean"
+    assert parameter["default"] is True
+
+
+def test_modify_diagram_can_skip_visual_verification(tmp_path, monkeypatch):
+    session = DiagramSession(_settings(), tmp_path / "generate")
+    session.current_code = "flowchart TD\nA-->B"
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return "modified"
+
+    monkeypatch.setattr(session, "_run", fake_run)
+    reply = session.modify("快速改成绿色", visual_verification=False)
+
+    assert reply == "modified"
+    assert captured["visual_verification"] is False
+    images = SimpleNamespace(add=lambda path: path)
+    tools = {item.name: item for item in build_skills(session, images)}
+    parameter = tools["modify_diagram"].parameters["properties"]["visual_verification"]
+    assert parameter["type"] == "boolean"
+    assert parameter["default"] is True
+
+
+def test_agent_skips_review_after_successful_render(tmp_path, monkeypatch):
+    agent = FlowchartAgent(_settings())
+    stages = []
+
+    monkeypatch.setattr(
+        agent,
+        "_generate",
+        lambda *args, **kwargs: ("flowchart TD\nA-->B", "raw model output"),
+    )
+
+    def fail_if_verified(*args, **kwargs):
+        raise AssertionError("verification should not run")
+
+    monkeypatch.setattr(agent, "_verify", fail_if_verified)
+
+    def fake_render(code, output_dir, stem, fmt, **kwargs):
+        path = Path(output_dir) / f"{stem}.{fmt}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(code, encoding="utf-8")
+        return SimpleNamespace(ok=True, image_path=path, svg_path=None, error="")
+
+    monkeypatch.setattr(agent_module, "render_mermaid", fake_render)
+    result = agent.run(
+        "简单流程",
+        tmp_path / "run",
+        verify_mode="none",
+        on_stage=lambda stage, message: stages.append((stage, message)),
+    )
+
+    assert result.success is True
+    assert len(result.rounds) == 1
+    assert result.rounds[0].feedback == "已按要求跳过视觉验证"
+    assert any(stage == "completed" for stage, _ in stages)
+    assert not (tmp_path / "run" / "round_1_verify_raw.txt").exists()
+
+
 def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
     app = create_app(
         _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
@@ -299,8 +427,20 @@ def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
 
     tools = state.agent._skills
     assert tools["read_document"].handler(path="workspace/inside.md") == "SESSION_ONLY_MARKER"
-    assert "inside.md" in tools["find_files"].handler(keyword="inside")
-    assert "SESSION_ONLY_MARKER" in tools["grep_files"].handler(pattern="SESSION_ONLY")
+    find_result = tools["find_files"].handler(keyword="inside")
+    grep_result = tools["grep_files"].handler(pattern="SESSION_ONLY")
+    assert "inside.md" in find_result and "size=" in find_result
+    assert "SESSION_ONLY_MARKER" in grep_result and "[19 B]" in grep_result
+    assert "delegate_task" in tools
+    assert "32KB" in tools["read_document"].description
+    assert state.agent._subagent.tool_names == {
+        "read_document", "find_files", "grep_files", "write_file", "replace_in_file"
+    }
+    assert state.agent._subagent._run_lock.acquire(blocking=False)
+    try:
+        assert "已有一个子 Agent" in state.agent._subagent.run("读取 inside.md")
+    finally:
+        state.agent._subagent._run_lock.release()
 
     for forbidden in (server_secret, other_secret):
         result = tools["read_document"].handler(path=str(forbidden))
@@ -340,6 +480,55 @@ def test_tui_default_resource_paths_remain_compatible(tmp_path, monkeypatch):
     assert "default" in session.list_styles()
     # 非法名称在模型调用前返回，也覆盖默认 SkillAgent 目录不会 Path(None)。
     assert "名称只能" in session.create_skill("INVALID NAME", "test")
+
+
+def test_file_subagent_runs_restricted_tool_loop_and_emits_events(tmp_path):
+    app = create_app(
+        _settings(), data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "subagent-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    state = app.state.agent_service.get_session(session_id)
+    subagent = state.agent._subagent
+    target = state.root / "workspace" / "large.md"
+    target.write_text("IMPORTANT_FINDING", encoding="utf-8")
+    events = []
+    subagent._on_event = lambda event, data: events.append((event, data))
+    calls = 0
+
+    def fake_chat(
+        messages, tools, on_delta, on_tick=None, on_reasoning=None,
+        should_cancel=None,
+    ):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            arguments = '{"keyword":"large"}'
+            on_reasoning("先查找目标文件")
+            on_tick(arguments)
+            tool_call = SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="find_files", arguments=arguments),
+                model_dump=lambda: {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "find_files", "arguments": arguments},
+                },
+            )
+            return SimpleNamespace(content="", tool_calls=[tool_call])
+        assert "large.md" in messages[-1]["content"]
+        on_delta("已找到目标文件。")
+        return SimpleNamespace(content="已找到目标文件。", tool_calls=[])
+
+    subagent._llm.chat_with_tools_stream = fake_chat
+    assert subagent.run("查找 large.md") == "已找到目标文件。"
+    assert [event for event, _ in events] == [
+        "started", "reasoning.delta", "usage", "tool.started", "tool.completed",
+        "delta", "completed",
+    ]
+    tool_result = next(data["result"] for event, data in events if event == "tool.completed")
+    assert "large.md" in tool_result and "size=" in tool_result
 
 
 def test_sessions_are_isolated_between_users(tmp_path):
@@ -474,7 +663,8 @@ def test_verification_uses_streaming_tool_call_and_reports_deltas():
         _no_tools = False
 
         def chat_with_tools_stream(
-            self, messages, tools, on_delta, on_tick=None, on_reasoning=None
+            self, messages, tools, on_delta, on_tick=None, on_reasoning=None,
+            should_cancel=None,
         ):
             on_delta('{"reason":"版面清晰",')
             if on_tick:
@@ -578,3 +768,36 @@ def test_reasoning_delta_is_emitted_for_web_run(tmp_path):
         time.sleep(0.005)
     reasoning = [event for event in run.events if event["type"] == "reasoning.delta"]
     assert reasoning[0]["data"]["text"] == "正在分析流程结构"
+
+
+def test_context_stats_compaction_and_restore(tmp_path):
+    data = tmp_path / "data"
+    output = tmp_path / "output"
+    app = create_app(_settings(), data_root=data, workspace_root=output)
+    client = TestClient(app)
+    _register(client, "context-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    store = app.state.store
+    state = app.state.agent_service.get_session(session_id)
+
+    for turn in range(3):
+        store.add_message(session_id, "user", f"第 {turn} 轮需求：" + "流程步骤" * 180)
+        store.add_message(session_id, "assistant", f"第 {turn} 轮结果：" + "已完成" * 180)
+    state.agent.restore_history(store.messages(session_id))
+    state.agent._llm.chat = lambda _messages: "已确认目标、关键文件和前两轮执行结果。"
+
+    before = client.get(f"/v1/sessions/{session_id}/context")
+    assert before.status_code == 200
+    assert before.json()["used_tokens"] > 800
+
+    compacted = client.post(f"/v1/sessions/{session_id}/context/compact")
+    assert compacted.status_code == 200
+    assert compacted.json()["compressed"] is True
+    assert compacted.json()["used_tokens"] < compacted.json()["before_tokens"]
+    assert len(client.get(f"/v1/sessions/{session_id}/messages").json()) == 6
+
+    app.state.agent_service.sessions.pop(session_id)
+    restored = app.state.agent_service.get_session(session_id)
+    assert restored.agent._messages[1]["role"] == "system"
+    assert "已确认目标" in restored.agent._messages[1]["content"]
+    assert [item["role"] for item in restored.agent._messages[-2:]] == ["user", "assistant"]

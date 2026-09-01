@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
+from .cancellation import CancelCheck, OperationCancelled
 from .config import Settings
 from .drawio import (
     DrawioNotFoundError,
@@ -182,8 +183,8 @@ class FlowchartAgent:
         on_delta：生成阶段的流式文本回调（界面层实时显示），None 为非流式。
         on_reasoning：生成阶段的思考流回调（推理模型的 reasoning_content，
         仅界面提示与用量估算用），None 为不需要。
-        verify_mode：视觉检视强度，full=完整检视（排版+内容语义），
-        layout=仅基础图形检视（视觉模型识字能力弱时用，防止误判死循环）。
+        verify_mode：检视强度，full=完整检视（排版+内容语义），
+        layout=仅基础图形检视，code=源码检视，none=成功渲染后直接返回。
         on_round_start：每轮开始时回调（界面层清空上一轮的流式显示）。
         action：触发本次运行的动作描述（如 create_diagram/modify_diagram
         及其参数摘要），仅用于 run.log 记录任务上下文。
@@ -207,7 +208,9 @@ class FlowchartAgent:
                 )
                 logger.info("图型：%s（沿用上版代码的图型）", diagram_type)
             else:
-                diagram_type = route_diagram_type(self._text_llm, document)
+                diagram_type = route_diagram_type(
+                    self._text_llm, document, should_cancel=should_cancel
+                )
                 logger.info("图型：%s（LLM 二级路由）", diagram_type)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +278,7 @@ class FlowchartAgent:
                     on_delta=on_delta, on_reasoning=on_reasoning,
                     style=style, engine=engine,
                     diagram_type=diagram_type, flow_grid=flow_grid,
+                    should_cancel=should_cancel,
                 )
                 if should_cancel and should_cancel():
                     result.cancelled = True
@@ -326,7 +330,9 @@ class FlowchartAgent:
                         logger.warning("第 %d 轮：XML 校验/布局失败 -> %s", round_no, e)
                         continue
                     record.mermaid_code = styled
-                    render = self._render_drawio(styled, output_dir, round_no)
+                    render = self._render_drawio(
+                        styled, output_dir, round_no, should_cancel=should_cancel
+                    )
                 else:
                     # 应用风格插件（注入主题指令），渲染与产物都用风格化后的代码
                     styled = style.apply(code) if style else code
@@ -337,6 +343,7 @@ class FlowchartAgent:
                         chrome_path=self._settings.chrome_path,
                         scale=self._settings.render_scale,
                         width=self._settings.render_width,
+                        should_cancel=should_cancel,
                     )
                 record.render_ok = render.ok
                 record.image_path = render.image_path
@@ -364,6 +371,7 @@ class FlowchartAgent:
                         svg = render_mermaid(
                             styled, output_dir, stem=f"round_{round_no}", fmt="svg",
                             background=bg, chrome_path=self._settings.chrome_path,
+                            should_cancel=should_cancel,
                         )
                         if svg.ok:
                             record.svg_path = svg.image_path
@@ -385,6 +393,19 @@ class FlowchartAgent:
                     result.final_feedback = "用户已停止生成"
                     return result
 
+                if verify_mode == "none":
+                    record.feedback = "已按要求跳过视觉验证"
+                    if on_stage:
+                        on_stage(
+                            "completed",
+                            f"第 {round_no} 轮：渲染完成，已跳过视觉验证",
+                        )
+                    logger.info("第 %d 轮：渲染完成，跳过视觉验证并直接返回", round_no)
+                    result.success = True
+                    result.mermaid_code = styled
+                    result.image_path = render.image_path
+                    return result
+
                 # 3. 视觉验证（code 模式 / 未配置视觉模型时审查源码）
                 if on_stage:
                     label = "视觉验证" if verify_mode != "code" and self._vision_llm else "代码验证"
@@ -397,6 +418,7 @@ class FlowchartAgent:
                     on_delta=on_verify_delta,
                     on_tick=on_verify_tick,
                     on_reasoning=on_reasoning,
+                    should_cancel=should_cancel,
                 )
                 if should_cancel and should_cancel():
                     result.cancelled = True
@@ -451,6 +473,7 @@ class FlowchartAgent:
                     output_dir / f"failure_card.{self._drawio_fmt()}",
                     self._settings.drawio_path, fmt=self._drawio_fmt(),
                     scale=int(self._settings.render_scale or "2"),
+                    should_cancel=should_cancel,
                 )
                 if card_img:
                     result.mermaid_code = card_xml
@@ -466,6 +489,7 @@ class FlowchartAgent:
                 chrome_path=self._settings.chrome_path,
                 scale=self._settings.render_scale,
                 width=self._settings.render_width,
+                should_cancel=should_cancel,
             )
             if card.ok:
                 result.mermaid_code = card_code
@@ -473,6 +497,17 @@ class FlowchartAgent:
                 logger.info("失败卡片已生成：%s", card.image_path)
             else:  # 卡片渲染失败不应发生
                 logger.warning("失败卡片渲染失败（不应发生）：%s", card.error[:200])
+            return result
+        except OperationCancelled:
+            result.cancelled = True
+            result.final_feedback = "用户已停止生成"
+            rendered = next(
+                (r for r in reversed(result.rounds) if r.image_path is not None),
+                None,
+            )
+            if rendered is not None:
+                result.mermaid_code = rendered.mermaid_code
+                result.image_path = rendered.image_path
             return result
         finally:
             self._detach_run_log(handler)
@@ -497,7 +532,10 @@ class FlowchartAgent:
         fmt = self._settings.output_format
         return fmt if fmt in ("png", "svg", "pdf") else "png"
 
-    def _render_drawio(self, xml_text: str, output_dir: Path, round_no: int):
+    def _render_drawio(
+        self, xml_text: str, output_dir: Path, round_no: int,
+        should_cancel: CancelCheck = None,
+    ):
         """渲染一轮 drawio 产物（.drawio + 图片 + SVG），返回与 RenderResult 同形的对象。"""
         fmt = self._drawio_fmt()
         xml_path = output_dir / f"round_{round_no}.drawio"
@@ -506,6 +544,7 @@ class FlowchartAgent:
             xml_path, output_dir / f"round_{round_no}.{fmt}",
             self._settings.drawio_path, fmt=fmt,
             scale=int(self._settings.render_scale or "2"),
+            should_cancel=should_cancel,
         )
         if image is None:
             return SimpleNamespace(
@@ -517,6 +556,7 @@ class FlowchartAgent:
             svg_path = render_drawio(
                 xml_path, output_dir / f"round_{round_no}.svg",
                 self._settings.drawio_path, fmt="svg",
+                should_cancel=should_cancel,
             )
         return SimpleNamespace(ok=True, image_path=image, svg_path=svg_path, error=None)
 
@@ -532,6 +572,7 @@ class FlowchartAgent:
         engine: str = "mermaid",
         diagram_type: str = "",
         flow_grid: FlowGrid | None = None,
+        should_cancel: CancelCheck = None,
     ) -> tuple[str, str]:
         """返回 (提取出的图表代码, 模型原始输出)。image 为参考图（多模态模型时）。
 
@@ -568,9 +609,11 @@ class FlowchartAgent:
             if image:
                 messages = self._text_llm.with_images(messages, [image])
             if on_delta is not None:
-                raw = self._text_llm.chat_stream(messages, on_delta, on_reasoning)
+                raw = self._text_llm.chat_stream(
+                    messages, on_delta, on_reasoning, should_cancel=should_cancel
+                )
             else:
-                raw = self._text_llm.chat(messages)
+                raw = self._text_llm.chat(messages, should_cancel=should_cancel)
             return extract_xml(raw), raw
 
         if not prev_code:
@@ -595,9 +638,11 @@ class FlowchartAgent:
         if image:
             messages = self._text_llm.with_images(messages, [image])
         if on_delta is not None:
-            raw = self._text_llm.chat_stream(messages, on_delta, on_reasoning)
+            raw = self._text_llm.chat_stream(
+                messages, on_delta, on_reasoning, should_cancel=should_cancel
+            )
         else:
-            raw = self._text_llm.chat(messages)
+            raw = self._text_llm.chat(messages, should_cancel=should_cancel)
         return extract_mermaid(raw), raw
 
     def _verify(
@@ -609,6 +654,7 @@ class FlowchartAgent:
         on_delta=None,
         on_tick=None,
         on_reasoning=None,
+        should_cancel: CancelCheck = None,
     ) -> tuple[bool, str, str]:
         """返回 (是否通过, 问题列表, 模型原始回复)。
 
@@ -637,7 +683,8 @@ class FlowchartAgent:
                 }
             ]
             passed, issues, reply = self._judge(
-                self._text_llm, messages, on_delta, on_tick, on_reasoning
+                self._text_llm, messages, on_delta, on_tick, on_reasoning,
+                should_cancel,
             )
         else:
             if mode == "layout":
@@ -653,7 +700,8 @@ class FlowchartAgent:
             messages = LLMClient.with_images(
                 [{"role": "user", "content": prompt}], [image_path])
             passed, issues, reply = self._judge(
-                self._vision_llm, messages, on_delta, on_tick, on_reasoning
+                self._vision_llm, messages, on_delta, on_tick, on_reasoning,
+                should_cancel,
             )
         verdict = "PASS" if passed else "FAIL"
         logger.info("检视结论：%s（理由 %d 字符）", verdict, len(issues or reply))
@@ -666,6 +714,7 @@ class FlowchartAgent:
         on_delta=None,
         on_tick=None,
         on_reasoning=None,
+        should_cancel: CancelCheck = None,
     ) -> tuple[bool, str, str]:
         """一次请求拿检视结论：工具与正文 JSON 是平行通道，不强制、不重试。
 
@@ -680,9 +729,10 @@ class FlowchartAgent:
         def plain_reply() -> str:
             if on_delta is not None or on_tick is not None or on_reasoning is not None:
                 return llm.chat_stream(
-                    messages, on_delta or (lambda _text: None), on_reasoning
+                    messages, on_delta or (lambda _text: None), on_reasoning,
+                    should_cancel=should_cancel,
                 ).strip()
-            return llm.chat(messages).strip()
+            return llm.chat(messages, should_cancel=should_cancel).strip()
 
         if getattr(llm, "_no_tools", False):
             return self._judge_content(plain_reply())
@@ -694,9 +744,15 @@ class FlowchartAgent:
                     on_delta=on_delta or (lambda _text: None),
                     on_tick=on_tick,
                     on_reasoning=on_reasoning,
+                    should_cancel=should_cancel,
                 )
             else:
-                msg = llm.chat_with_tools(messages, [prompts.SUBMIT_RESULT_TOOL])
+                msg = llm.chat_with_tools(
+                    messages, [prompts.SUBMIT_RESULT_TOOL],
+                    should_cancel=should_cancel,
+                )
+        except OperationCancelled:
+            raise
         except Exception as e:
             logger.warning("submit_result 工具调用失败（%s），退回纯文本检视", e)
             if "tool" in str(e).lower():

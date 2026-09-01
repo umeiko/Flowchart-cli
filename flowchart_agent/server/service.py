@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..cancellation import OperationCancelled
 from ..config import Settings
 from ..main_agent import MainAgent
 from ..runtime import app_dir
@@ -317,12 +318,19 @@ class AgentService:
             workspace_changed(stage, refresh_diagram=stage == "verifying")
 
         def tool_completed(name: str, result: str) -> None:
-            emit("tool.completed", name=name, result=result[:1000])
+            emit("tool.completed", name=name, result=result)
             workspace_changed(f"tool:{name}")
 
         def progress_updated(message: str) -> None:
             emit("progress.updated", message=message)
             workspace_changed("progress")
+
+        def subagent_event(event: str, data: dict) -> None:
+            emit(f"subagent.{event}", **data)
+            if event == "usage":
+                emit("usage.delta", chars=data.get("chars", 0), kind="subagent")
+            if event == "tool.completed":
+                workspace_changed(f"subagent:{data.get('name', 'tool')}")
 
         diagram.on_delta = lambda text: (
             emit("generation.delta", text=text),
@@ -371,6 +379,7 @@ class AgentService:
             on_progress=progress_updated,
             command_runner=None,
             should_cancel=diagram.should_cancel,
+            on_subagent_event=subagent_event,
         )
         state = SessionState(
             session_id, _now(), root, diagram, agent, user_id=user_id, title=title,
@@ -381,7 +390,8 @@ class AgentService:
         if _restore_id:
             state.mounted_resources = self.store.resource_mounts(session_id)
             self._activate_mounted_resources(state)
-            agent.restore_history(self.store.messages(session_id))
+            summary, messages = self.store.context_messages(session_id)
+            agent.restore_history(messages, summary)
         else:
             self.store.save_session(
                 session_id, user_id, title, diagram.engine, diagram.verify_mode,
@@ -467,6 +477,8 @@ class AgentService:
                     run.status = "completed"
                     run.completed_at = _now()
                     run.emit("run.completed", reply=reply)
+            except OperationCancelled:
+                self._finish_cancelled(session, run)
             except Exception as exc:
                 run.error = str(exc)
                 run.status = "failed"
@@ -491,6 +503,24 @@ class AgentService:
         if run is None or run.status in {"completed", "failed", "cancelled"}:
             return None
         return run
+
+    def context_stats(self, session_id: str) -> dict:
+        return self.get_session(session_id).agent.context_stats()
+
+    def compact_context(self, session_id: str) -> dict:
+        session = self.get_session(session_id)
+        active = session.active_run_holder["run"]
+        if active is not None and active.status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("任务运行中，暂时不能压缩上下文")
+        with session.lock:
+            result = session.agent.compact_context()
+            if not result.get("compressed"):
+                return result
+            response = dict(result)
+            summary = response.pop("summary")
+            retained = response.pop("retained_plain_messages")
+            self.store.save_context_summary(session_id, summary, retained)
+            return response
 
     def cancel_run(self, run_id: str) -> RunState:
         run = self.get_run(run_id)

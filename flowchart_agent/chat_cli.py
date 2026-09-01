@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from itertools import zip_longest
 from pathlib import Path
 
@@ -46,6 +47,7 @@ from .banner_logo import (
     LOGO_WIDTH,
     logo_lines,
 )
+from .cancellation import CancelCheck, OperationCancelled, raise_if_cancelled
 from .config import Settings
 from .main_agent import MainAgent
 from .session import DiagramSession
@@ -60,7 +62,10 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 _HISTORY_FILE = Path.home() / ".flowchart_agent_history"
-_COMMANDS = ["/code", "/engine", "/path", "/yolo", "/help", "/exit", "/quit"]
+_COMMANDS = [
+    "/code", "/context", "/compact", "/engine", "/path", "/yolo",
+    "/help", "/exit", "/quit",
+]
 
 _CMD_TIMEOUT = 120  # run_command 单次执行超时（秒）
 _CMD_OUTPUT_LIMIT = 4000  # 返回给模型的输出截断长度
@@ -74,14 +79,20 @@ _PT_STYLE = PtStyle.from_dict(
     }
 )
 
-_TOOLBAR = HTML(
-    " <b>Enter</b> 发送 · <b>↑/↓</b> 历史 · <b>Ctrl+C</b> 取消 · <b>Ctrl+D</b> 退出 "
-)
+def _toolbar(agent: MainAgent) -> HTML:
+    stats = agent.context_stats()
+    return HTML(
+        " <b>Enter</b> 发送 · <b>↑/↓</b> 历史 · "
+        f"上下文 ≈{stats['used_tokens']:,}/{stats['limit_tokens']:,} "
+        f"({stats['percent']}%) · <b>/compact</b> 压缩 · <b>Ctrl+D</b> 退出 "
+    )
 
 _HELP = """\
 **命令**
 
 - `/code` — 打印当前图的源码（mermaid 引擎为 Mermaid 代码，drawio 引擎为 draw.io XML）
+- `/context` — 查看主 Agent 的上下文长度估算（包含消息与工具定义）
+- `/compact` — 调用主文本模型把旧对话压缩为工作摘要，并保留最近一轮
 - `/engine` — 查看或切换出图引擎：`/engine mermaid` / `/engine drawio`（drawio 需配置 DRAWIO_PATH，产物为可二次编辑的 .drawio）
 - `/path` — 打印当前产物目录
 - `/help` — 显示本帮助
@@ -145,7 +156,12 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
     session.on_reasoning = display.show_reasoning  # 推理模型的思考流提示
     session.on_round_start = display.reset_segment  # 每轮清空上一段，避免堆砌
     session.on_stage = display.show_stage
-    runner = _CommandRunner(console, display, yolo=yolo, cwd=output_dir)  # run_command 后端
+    cancel_event = threading.Event()
+    session.should_cancel = cancel_event.is_set
+    runner = _CommandRunner(
+        console, display, yolo=yolo, cwd=output_dir,
+        should_cancel=cancel_event.is_set,
+    )  # run_command 后端
     agent = MainAgent(
         settings, session,
         on_tool_call=_show_tool_call,
@@ -155,6 +171,8 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         output_root=output_dir,
         on_progress=display.set_status,  # 检查管线的路由/进度提示
         command_runner=runner,
+        should_cancel=cancel_event.is_set,
+        on_subagent_event=lambda event, data: _show_subagent_event(display, event, data),
     )
     animator = _print_banner(output_dir, settings, yolo=yolo, session_engine=session.engine)
     chips = ChipRegistry()
@@ -167,7 +185,7 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
         while True:
             try:
                 user_input = prompt_session.prompt(
-                    HTML("<prompt>❯ </prompt>"), bottom_toolbar=_TOOLBAR
+                    HTML("<prompt>❯ </prompt>"), bottom_toolbar=_toolbar(agent)
                 ).strip()
             except KeyboardInterrupt:  # Ctrl+C：清空当前行，继续
                 console.print("[dim]（已取消输入）[/dim]")
@@ -188,6 +206,31 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
                 code = session.current_code
                 fence = "xml" if session.engine == "drawio" else "mermaid"
                 console.print(Markdown(f"```{fence}\n{code}\n```" if code else "（还没有图）"))
+                continue
+            if user_input == "/context":
+                stats = agent.context_stats()
+                console.print(
+                    "上下文（估算）："
+                    f"[cyan]{stats['used_tokens']:,}[/cyan] / {stats['limit_tokens']:,} tokens "
+                    f"({stats['percent']}%)；消息 {stats['message_tokens']:,}，"
+                    f"工具定义 {stats['tool_tokens']:,}。"
+                )
+                continue
+            if user_input == "/compact":
+                try:
+                    with console.status("[cyan]正在压缩上下文…[/cyan]"):
+                        result = agent.compact_context()
+                except Exception as exc:
+                    logger.exception("上下文压缩失败")
+                    console.print(f"[red]上下文压缩失败：{exc}[/red]")
+                    continue
+                if result["compressed"]:
+                    console.print(
+                        "[green]上下文已压缩：[/green]"
+                        f"约 {result['before_tokens']:,} → {result['used_tokens']:,} tokens。"
+                    )
+                else:
+                    console.print(f"[dim]{result.get('reason', '当前上下文无需压缩。')}[/dim]")
                 continue
             if user_input == "/engine" or user_input.startswith("/engine "):
                 arg = user_input[7:].strip()
@@ -218,8 +261,20 @@ def _chat_loop(settings: Settings, output_dir: Path, yolo: bool = False) -> int:
                               + "、".join(p.name for p in images) + "[/dim]")
 
             try:
-                with display:
-                    reply = agent.chat(resolved_input, images=images or None)
+                cancel_event.clear()
+                previous_sigint = signal.getsignal(signal.SIGINT)
+
+                def request_cancel(_signum, _frame):
+                    if cancel_event.is_set():
+                        raise KeyboardInterrupt
+                    cancel_event.set()
+
+                signal.signal(signal.SIGINT, request_cancel)
+                try:
+                    with display:
+                        reply = agent.chat(resolved_input, images=images or None)
+                finally:
+                    signal.signal(signal.SIGINT, previous_sigint)
             except KeyboardInterrupt:  # Ctrl+C：打断进行中的请求，回到输入
                 console.print("[yellow]已取消本次请求。[/yellow]")
                 continue
@@ -378,6 +433,24 @@ class _StreamDisplay:
         self.tick(delta)
         self._feed("[bold magenta]视觉验证中…[/bold magenta]", "magenta", delta)
 
+    def show_subagent_started(self, task: str) -> None:
+        self._buf = []
+        self._reason_buf = ""
+        self._status_text = f"子 Agent 工作中：{task[:80]}"
+        if self._live is not None:
+            self._live.update(self._wait_view())
+
+    def show_subagent_delta(self, delta: str) -> None:
+        self.tick(delta)
+        self._feed("[bold bright_magenta]子 Agent[/bold bright_magenta]", "bright_magenta", delta)
+
+    def show_subagent_reasoning(self, delta: str) -> None:
+        self._reason_buf = (self._reason_buf + delta)[-800:]
+        self.tick(delta)
+        self._status_text = "子 Agent 思考中…"
+        if self._live is not None and not self._buf:
+            self._live.update(self._wait_view())
+
     def show_stage(self, stage: str, message: str) -> None:
         """阶段切换时回到单行状态，避免验证流与上一段图表源码混在一起。"""
         if stage in {"rendering", "verifying", "verified"}:
@@ -427,6 +500,29 @@ def _show_tool_call(name: str, arguments: str) -> None:
     console.print(f"[dim]→ 调用 {name}({args})[/dim]")
 
 
+def _show_subagent_event(display: _StreamDisplay, event: str, data: dict) -> None:
+    if event == "started":
+        display.show_subagent_started(data.get("task", ""))
+    elif event == "delta":
+        display.show_subagent_delta(data.get("text", ""))
+    elif event == "reasoning.delta":
+        display.show_subagent_reasoning(data.get("text", ""))
+    elif event == "tool.started":
+        args = data.get("arguments", "")
+        args = args if len(args) <= 80 else args[:77] + "..."
+        console.print(
+            f"[bright_magenta]↳ 子 Agent 调用 {data.get('name', 'tool')}({args})[/bright_magenta]"
+        )
+    elif event == "tool.completed":
+        console.print(
+            f"[magenta]↳ 子 Agent 已完成 {data.get('name', 'tool')}[/magenta]"
+        )
+    elif event == "completed":
+        console.print("[bold bright_magenta]↳ 子 Agent 工作完成[/bold bright_magenta]")
+    elif event in {"failed", "cancelled"}:
+        console.print(f"[bright_magenta]↳ 子 Agent {event}[/bright_magenta]")
+
+
 class _CommandRunner:
     """run_command 工具的执行后端：红框确认 + 超时 + Ctrl+C 杀进程。
 
@@ -435,19 +531,24 @@ class _CommandRunner:
     只到达父进程，由父进程捕获后 SIGKILL 整个子进程组，实现"直接杀掉"。
     """
 
-    def __init__(self, console: Console, display: _StreamDisplay,
-                 yolo: bool = False, cwd: Path | None = None):
+    def __init__(
+        self, console: Console, display: _StreamDisplay,
+        yolo: bool = False, cwd: Path | None = None,
+        should_cancel: CancelCheck = None,
+    ):
         self._console = console
         self._display = display
         self.yolo = yolo
         # 命令的工作目录固定为产物目录：Agent 跑命令产生的文件不落在项目根目录
         self._cwd = Path(cwd).resolve() if cwd else Path.cwd()
         self._cwd.mkdir(parents=True, exist_ok=True)
+        self._should_cancel = should_cancel
 
     def run(self, command: str) -> str:
         command = (command or "").strip()
         if not command:
             return "错误：命令为空。"
+        raise_if_cancelled(self._should_cancel)
         logger.info("run_command 请求执行：%s", command)
         self._display.suspend()
         try:
@@ -463,6 +564,7 @@ class _CommandRunner:
                 )
             )
             if not self.yolo and not self._confirm():
+                raise_if_cancelled(self._should_cancel)
                 logger.info("run_command 被用户拒绝：%s", command)
                 return "用户拒绝了该命令的执行，请勿重复尝试同一命令。"
             return self._exec(command)
@@ -496,11 +598,26 @@ class _CommandRunner:
                 errors="replace",
                 cwd=str(self._cwd),
                 start_new_session=(sys.platform != "win32"),
+                creationflags=(
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    if sys.platform == "win32" else 0
+                ),
             )
         except OSError as exc:
             return f"错误：无法启动命令：{exc}"
         try:
-            out, _ = proc.communicate(timeout=_CMD_TIMEOUT)
+            started = time.monotonic()
+            while True:
+                try:
+                    out, _ = proc.communicate(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    if self._should_cancel is not None and self._should_cancel():
+                        self._kill_proc(proc)
+                        out, _ = proc.communicate()
+                        raise OperationCancelled("用户已停止命令执行")
+                    if time.monotonic() - started >= _CMD_TIMEOUT:
+                        raise
         except KeyboardInterrupt:
             self._kill_proc(proc)
             self._console.print("\n[red]命令已被 Ctrl+C 中断。[/red]")
@@ -532,11 +649,21 @@ class _CommandRunner:
     def _kill_proc(proc: subprocess.Popen) -> None:
         try:
             if sys.platform == "win32":
-                proc.kill()
+                killed = subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if killed.returncode != 0 and proc.poll() is None:
+                    proc.kill()
             else:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
 
 def _banner_info_lines(settings: Settings, session_engine: str) -> list[str]:

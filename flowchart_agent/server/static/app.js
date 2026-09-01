@@ -6,6 +6,8 @@ const ui = {
   stop: document.querySelector("#stop"),
   file: document.querySelector("#file"),
   attachments: document.querySelector("#attachments"),
+  contextStatus: document.querySelector("#context-status"),
+  compactContext: document.querySelector("#compact-context"),
   status: document.querySelector("#status"),
   statusDot: document.querySelector("#status-dot"),
   canvas: document.querySelector("#canvas"),
@@ -62,6 +64,9 @@ const ui = {
   fileEntryDialog: document.querySelector("#file-entry-dialog"), fileEntryForm: document.querySelector("#file-entry-form"),
   fileEntryTitle: document.querySelector("#file-entry-title"), fileEntryName: document.querySelector("#file-entry-name"),
   fileEntryHelp: document.querySelector("#file-entry-help"), fileEntryCancel: document.querySelector("#file-entry-cancel"),
+  toolDetailDialog: document.querySelector("#tool-detail-dialog"), toolDetailTitle: document.querySelector("#tool-detail-title"),
+  toolDetailMeta: document.querySelector("#tool-detail-meta"), toolDetailRequest: document.querySelector("#tool-detail-request"),
+  toolDetailResult: document.querySelector("#tool-detail-result"), toolDetailClose: document.querySelector("#tool-detail-close"),
 };
 
 let sessionId = null;
@@ -89,6 +94,7 @@ let workspaceRefreshTimer = null;
 let workspaceRefreshDiagram = false;
 let renderedTreeSessionId = null;
 let renderedTreeSignature = null;
+let activeToolDetail = null;
 
 const layoutDefaults = { filebar: 260, preview: 610, composer: 160 };
 const layoutState = {...layoutDefaults};
@@ -204,18 +210,70 @@ function toolLabel(name) {
     use_skill: "加载 Skill", list_styles: "检索 Styles", set_style: "应用 Style",
     create_diagram: "生成流程图", modify_diagram: "修改流程图", restyle_diagram: "调整图表风格",
     create_style: "生成 Style", create_skill: "生成 Skill", set_verification: "调整验证模式",
-    get_current_diagram: "读取当前图", find_files: "查找文件", write_working_doc: "整理工作文档",
+    get_current_diagram: "读取当前图", find_files: "查找文件", grep_files: "搜索文件内容",
+    write_file: "写入文件", replace_in_file: "修改文件", ocr_image: "识别图片文字",
+    run_command: "执行命令", delegate_task: "委派子 Agent", subagent_task: "处理委派任务",
+    write_working_doc: "整理工作文档",
   })[name] || name;
 }
 
-function addAgentAction(name) {
-  const node = document.createElement("div");
-  node.className = "agent-action running";
-  const icon = document.createElement("span"); icon.className = "agent-action-icon"; icon.textContent = "·";
-  const text = document.createElement("span"); text.textContent = `正在${toolLabel(name)}…`;
-  node.append(icon, text); ui.messages.append(node); ui.messages.scrollTop = ui.messages.scrollHeight;
-  return {node, icon, text};
+function prettyToolData(value, emptyText) {
+  if (value === null || value === undefined || value === "") return emptyText;
+  if (typeof value !== "string") return JSON.stringify(value, null, 2);
+  try { return JSON.stringify(JSON.parse(value), null, 2); }
+  catch (_error) { return value; }
 }
+
+function renderToolDetail(action) {
+  if (!action) return;
+  const owner = action.agent === "subagent" ? "子 Agent" : "主 Agent";
+  const status = action.result === null ? "执行中" : "已完成";
+  ui.toolDetailTitle.textContent = toolLabel(action.name);
+  ui.toolDetailMeta.textContent = `${owner} · ${action.name} · ${status}`;
+  ui.toolDetailRequest.textContent = prettyToolData(action.request, "（模型没有提供参数）");
+  ui.toolDetailResult.textContent = prettyToolData(action.result, "工具仍在执行，返回后会自动更新…");
+}
+
+function openToolDetail(action) {
+  activeToolDetail = action;
+  renderToolDetail(action);
+  if (!ui.toolDetailDialog.open) ui.toolDetailDialog.showModal();
+}
+
+function makeToolActionInspectable(action) {
+  action.node.classList.add("inspectable");
+  action.node.setAttribute("role", "button");
+  action.node.setAttribute("tabindex", "0");
+  action.node.title = "点击查看工具请求和返回结果";
+}
+
+function addAgentAction(name, agent = "main", request = null, beforeNode = null) {
+  const node = document.createElement("div");
+  node.className = `agent-action running${agent === "subagent" ? " subagent" : ""}`;
+  const icon = document.createElement("span"); icon.className = "agent-action-icon"; icon.textContent = "·";
+  const prefix = agent === "subagent" ? "子 Agent 正在" : "正在";
+  const text = document.createElement("span"); text.textContent = `${prefix}${toolLabel(name)}…`;
+  node.append(icon, text);
+  if (beforeNode?.parentNode === ui.messages) ui.messages.insertBefore(node, beforeNode);
+  else ui.messages.append(node);
+  ui.messages.scrollTop = ui.messages.scrollHeight;
+  const action = {node, icon, text, name, agent, request, result: null};
+  if (request !== null) makeToolActionInspectable(action);
+  node.addEventListener("click", () => {
+    if (node.classList.contains("inspectable")) openToolDetail(action);
+  });
+  node.addEventListener("keydown", event => {
+    if (!node.classList.contains("inspectable") || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault(); openToolDetail(action);
+  });
+  return action;
+}
+
+ui.toolDetailClose.addEventListener("click", () => ui.toolDetailDialog.close());
+ui.toolDetailDialog.addEventListener("close", () => { activeToolDetail = null; });
+ui.toolDetailDialog.addEventListener("click", event => {
+  if (event.target === ui.toolDetailDialog) ui.toolDetailDialog.close();
+});
 
 async function api(path, options = {}) {
   const response = await fetch(path, options);
@@ -238,6 +296,26 @@ async function api(path, options = {}) {
     throw new Error(detail || `请求失败：${response.status}`);
   }
   return response.status === 204 ? null : response.json();
+}
+
+function compactTokenLabel(tokens) {
+  if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}m`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1)}k`;
+  return String(tokens);
+}
+
+function renderContextStats(stats) {
+  ui.contextStatus.textContent = `上下文 ≈${compactTokenLabel(stats.used_tokens)} / ${compactTokenLabel(stats.limit_tokens)} · ${stats.percent}%`;
+  const controls = ui.contextStatus.closest(".context-controls");
+  controls.classList.toggle("warning", stats.percent >= 70 && stats.percent < 90);
+  controls.classList.toggle("danger", stats.percent >= 90);
+}
+
+async function refreshContext(targetSessionId = sessionId) {
+  if (!targetSessionId) return;
+  const stats = await api(`/v1/sessions/${targetSessionId}/context`);
+  if (targetSessionId === sessionId) renderContextStats(stats);
+  return stats;
 }
 
 function userInitial(username) {
@@ -357,7 +435,10 @@ async function loadSession(id) {
   ui.messages.replaceChildren();
   if (!messages.length) addMessage("描述你要创建的流程图，也可以附带需求文档或参考图片。");
   for (const message of messages) addMessage(message.content, message.role, message.attachments.map(filename => ({filename})));
-  await Promise.all([refreshTree(), refreshResources("skills"), refreshResources("styles"), refreshDiagram(id)]);
+  await Promise.all([
+    refreshTree(), refreshResources("skills"), refreshResources("styles"),
+    refreshDiagram(id), refreshContext(id),
+  ]);
   if (loadToken !== sessionLoadToken || sessionId !== id) return;
   const activeRun = await api(`/v1/sessions/${id}/active-run`);
   if (loadToken !== sessionLoadToken || sessionId !== id) return;
@@ -1274,6 +1355,7 @@ function setRunControls(running, stopping = false) {
   ui.stop.disabled = stopping;
   ui.stop.textContent = stopping ? "停止中…" : "停止";
   ui.prompt.disabled = running;
+  ui.compactContext.disabled = running;
 }
 
 function followRun(runId, runSessionId = sessionId) {
@@ -1289,10 +1371,16 @@ function followRun(runId, runSessionId = sessionId) {
   let streamedText = "";
   let generation = null;
   const pendingTools = new Map();
+  const pendingSubagentTools = new Map();
   let reasoningAction = null;
   let reasoningBuffer = "";
   let usageChars = 0;
   let verificationChars = 0;
+  let subagentTaskAction = null;
+  let subagentReasoning = null;
+  let subagentReasoningBuffer = "";
+  let subagentOutput = null;
+  let subagentOutputBuffer = "";
   const startedAt = Date.now();
   const metrics = document.createElement("div");
   metrics.className = "run-metrics";
@@ -1397,7 +1485,7 @@ function followRun(runId, runSessionId = sessionId) {
     const payload = JSON.parse(event.data);
     const name = payload.data.name;
     finishReasoning();
-    const action = addAgentAction(name);
+    const action = addAgentAction(name, "main", payload.data.arguments ?? "", assistant);
     const queue = pendingTools.get(name) || [];
     queue.push(action); pendingTools.set(name, queue);
   });
@@ -1405,7 +1493,7 @@ function followRun(runId, runSessionId = sessionId) {
     if (sessionId !== runSessionId) return;
     const payload = JSON.parse(event.data);
     const isSkill = payload.data.kind === "skills";
-    const action = addAgentAction(isSkill ? "use_skill" : "set_style");
+    const action = addAgentAction(isSkill ? "use_skill" : "set_style", "main", null, assistant);
     action.node.classList.remove("running"); action.node.classList.add("completed");
     action.icon.textContent = "✓";
     action.text.textContent = `服务端已加载 ${isSkill ? "Skill" : "Style"}：${payload.data.name}`;
@@ -1419,9 +1507,80 @@ function followRun(runId, runSessionId = sessionId) {
     if (!action) return;
     action.node.classList.remove("running"); action.node.classList.add("completed");
     action.icon.textContent = "✓"; action.text.textContent = `已完成：${toolLabel(name)}`;
-    action.node.title = payload.data.result || "";
+    action.result = payload.data.result ?? "";
+    makeToolActionInspectable(action);
+    if (activeToolDetail === action) renderToolDetail(action);
     scheduleWorkspaceRefresh(runSessionId);
   });
+  stream.addEventListener("subagent.started", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    subagentTaskAction = addAgentAction("subagent_task", "subagent", null, assistant);
+    const task = payload.data.task || "文件任务";
+    subagentTaskAction.text.textContent = `子 Agent 已接手：${task.length > 90 ? `${task.slice(0, 90)}…` : task}`;
+    subagentTaskAction.node.title = task;
+  });
+  stream.addEventListener("subagent.reasoning.delta", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    subagentReasoningBuffer = (subagentReasoningBuffer + (payload.data.text || "")).slice(-1200);
+    if (!subagentReasoning) {
+      subagentReasoning = document.createElement("div");
+      subagentReasoning.className = "subagent-line";
+      ui.messages.append(subagentReasoning);
+    }
+    const lines = subagentReasoningBuffer.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    subagentReasoning.textContent = `子 Agent 思考中 · ${lines.at(-1) || "正在分析文件…"}`;
+    ui.messages.scrollTop = ui.messages.scrollHeight;
+  });
+  stream.addEventListener("subagent.delta", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    subagentOutputBuffer = (subagentOutputBuffer + (payload.data.text || "")).slice(-1600);
+    if (!subagentOutput) {
+      subagentOutput = document.createElement("div");
+      subagentOutput.className = "subagent-line";
+      ui.messages.append(subagentOutput);
+    }
+    const lines = subagentOutputBuffer.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const tail = lines.at(-1) || "正在整理结果…";
+    subagentOutput.textContent = `子 Agent 输出 · ${tail.length > 120 ? `…${tail.slice(-120)}` : tail}`;
+    ui.messages.scrollTop = ui.messages.scrollHeight;
+  });
+  stream.addEventListener("subagent.tool.started", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    const name = payload.data.name;
+    const action = addAgentAction(name, "subagent", payload.data.arguments ?? "", assistant);
+    const queue = pendingSubagentTools.get(name) || [];
+    queue.push(action); pendingSubagentTools.set(name, queue);
+  });
+  stream.addEventListener("subagent.tool.completed", event => {
+    if (sessionId !== runSessionId) return;
+    const payload = JSON.parse(event.data);
+    const name = payload.data.name;
+    const queue = pendingSubagentTools.get(name) || [];
+    const action = queue.shift();
+    if (!action) return;
+    action.node.classList.remove("running"); action.node.classList.add("completed");
+    action.icon.textContent = "✓"; action.text.textContent = `子 Agent 已完成：${toolLabel(name)}`;
+    action.result = payload.data.result ?? "";
+    makeToolActionInspectable(action);
+    if (activeToolDetail === action) renderToolDetail(action);
+    scheduleWorkspaceRefresh(runSessionId);
+  });
+  const finishSubagent = status => {
+    if (subagentReasoning) subagentReasoning.classList.add("completed");
+    if (subagentOutput) subagentOutput.classList.add("completed");
+    if (!subagentTaskAction) return;
+    subagentTaskAction.node.classList.remove("running");
+    subagentTaskAction.node.classList.add("completed");
+    subagentTaskAction.icon.textContent = status === "completed" ? "✓" : "!";
+    subagentTaskAction.text.textContent = status === "completed" ? "子 Agent 工作完成" : `子 Agent ${status}`;
+  };
+  stream.addEventListener("subagent.completed", () => finishSubagent("completed"));
+  stream.addEventListener("subagent.failed", () => finishSubagent("执行失败"));
+  stream.addEventListener("subagent.cancelled", () => finishSubagent("已停止"));
   stream.addEventListener("run.completed", async event => {
     if (sessionId !== runSessionId) { stream.close(); return; }
     const payload = JSON.parse(event.data);
@@ -1436,6 +1595,7 @@ function followRun(runId, runSessionId = sessionId) {
     setStatus("已连接", true);
     await refreshDiagram();
     await refreshTree();
+    await refreshContext(runSessionId);
     await refreshSessionTabs();
   });
   stream.addEventListener("run.failed", async event => {
@@ -1448,6 +1608,7 @@ function followRun(runId, runSessionId = sessionId) {
     setStatus("运行失败");
     await refreshTree(runSessionId);
     await refreshDiagram(runSessionId);
+    await refreshContext(runSessionId);
   });
   stream.addEventListener("run.cancelling", () => {
     if (sessionId !== runSessionId) return;
@@ -1465,6 +1626,7 @@ function followRun(runId, runSessionId = sessionId) {
     setStatus("已停止", true);
     await refreshDiagram(runSessionId);
     await refreshTree();
+    await refreshContext(runSessionId);
   });
   stream.onerror = () => {
     if (stream.readyState === EventSource.CLOSED) return;
@@ -1572,6 +1734,31 @@ ui.stop.addEventListener("click", async () => {
   } catch (error) {
     setRunControls(true, false);
     setStatus(error.message);
+  }
+});
+
+ui.compactContext.addEventListener("click", async () => {
+  if (!sessionId || activeRunId) return;
+  const targetSessionId = sessionId;
+  ui.compactContext.disabled = true;
+  ui.compactContext.textContent = "压缩中…";
+  setStatus("正在压缩上下文");
+  try {
+    const stats = await api(`/v1/sessions/${targetSessionId}/context/compact`, {method: "POST"});
+    if (targetSessionId !== sessionId) return;
+    renderContextStats(stats);
+    if (stats.compressed) {
+      addMessage(`上下文已压缩：≈${compactTokenLabel(stats.before_tokens)} → ${compactTokenLabel(stats.used_tokens)} tokens`, "progress");
+      setStatus("上下文已压缩", true);
+    } else {
+      addMessage(stats.reason || "当前上下文无需压缩。", "progress");
+      setStatus("无需压缩", true);
+    }
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    ui.compactContext.textContent = "压缩";
+    ui.compactContext.disabled = Boolean(activeRunId);
   }
 });
 

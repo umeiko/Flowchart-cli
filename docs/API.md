@@ -117,6 +117,30 @@ Session 执行 Run 时返回 `409`。Web 文件树支持拖拽移动和右键复
 
 请求结构与创建会话相同。会话正在运行任务时返回 `409`。
 
+### 上下文统计与压缩
+
+- `GET /v1/sessions/{session_id}/context`：返回主 Agent 当前消息、工具定义和总上下文的
+  token 估算、配置窗口及占用百分比。
+- `POST /v1/sessions/{session_id}/context/compact`：调用一次主文本模型，把旧对话与工具结果
+  压缩成工作摘要并保留最近一轮；Run 执行中返回 `409`。
+
+统计使用跨模型的近似字符算法，仅用于容量提示，不等同于模型供应商计费 token。
+窗口大小由 `.env` 的 `TEXT_MODEL_CONTEXT_WINDOW` 配置，默认 `128000`。Web 的摘要与截断点
+保存在 SQLite，服务重启后继续生效；完整聊天记录仍保留用于界面查看，不会因压缩而删除。
+TUI 对应 `/context` 和 `/compact` 命令，其摘要仅在当前 TUI 进程内生效。
+
+### 文件子 Agent 1.0
+
+主 Agent 可调用 `delegate_task`，把较大文件（建议 32KB 以上）、跨文件检索和局部编辑
+交给一个无持久历史的文件子 Agent。每个 Session 同一时刻只能运行一个子 Agent；任务完成后
+只把精炼报告交回主 Agent，过长结果会被截断以保护主上下文。
+
+子 Agent 固定拥有 `read_document`、`find_files`、`grep_files`、`write_file`、
+`replace_in_file`；根据模型与界面配置附加 `read_image`、`ocr_image`、`run_command`。
+它不能生成流程图、修改配置、加载 Skill/Style，也不能再创建子 Agent。Server 不提供
+`run_command`，TUI 仍沿用命令确认机制。`find_files` 和 `grep_files` 的结果包含文件大小，
+供主 Agent 判断是否应委派。
+
 ## Client Skills / Styles
 
 创建 Web Session 时，服务端把项目默认 `skills/*.md` 和 `styles/*.md` 复制到：
@@ -245,14 +269,20 @@ Session 时通过该接口恢复停止按钮，并重新订阅 SSE 事件。
 | `assistant.delta` | 主 Agent 回复文本增量 |
 | `reasoning.status` | 思考状态，不包含原始思维链 |
 | `reasoning.delta` | 生成/验证模型的推理增量，供工作台灰色单行滚动展示；不持久化 |
-| `tool.started` | Agent 开始调用工具 |
+| `tool.started` | Agent 开始调用工具；`data.arguments` 为模型传入的工具参数 |
 | `generation.round_started` | 生成循环开始新一轮 |
 | `generation.delta` | 图表源码生成增量 |
 | `generation.stage` | 生成、渲染、视觉/代码验证等单行阶段状态 |
 | `workspace.changed` | 当前 Run 可能已写入中间产物；`data.refresh_diagram` 表示是否也应刷新当前图 |
 | `verification.delta` | 视觉/代码验证模型的流式响应进度；正文片段或工具参数字符数 |
 | `usage.delta` | 本轮流式字符增量，Web 端据此展示近似 token 数与耗时 |
-| `tool.completed` | 工具调用完成及其公开结果摘要 |
+| `tool.completed` | 工具调用完成；`data.result` 为返回给模型的完整结果，Web 可点开调用记录排查 |
+| `subagent.started` | 文件子 Agent 接手任务 |
+| `subagent.reasoning.delta` | 子 Agent 推理增量，Web/TUI 以独立颜色展示 |
+| `subagent.delta` | 子 Agent 最终报告的流式增量 |
+| `subagent.tool.started` | 子 Agent 开始调用受限工具 |
+| `subagent.tool.completed` | 子 Agent 工具调用完成 |
+| `subagent.completed` / `failed` / `cancelled` | 子 Agent 结束状态 |
 | `progress.updated` | 检查管线等阶段性进度 |
 | `resource.activated` | Run 前服务端已确定性激活一个挂载的 Skill 或 Style |
 | `run.completed` | 完成，`data.reply` 为最终回复 |
@@ -272,6 +302,13 @@ Session 时通过该接口恢复停止按钮，并重新订阅 SSE 事件。
 每轮图表代码成功渲染后，Core 会在视觉验证前立即同步 `current.mmd/current.drawio`、
 `current.png` 和 `current.svg`。因此即使后续验证失败、进入下一轮或被用户停止，当前图
 也指向本次 Run 最新的可渲染候选，而不是上一次历史版本。
+
+`create_diagram` 与 `modify_diagram` 工具提供可选布尔参数 `visual_verification`
+（默认 `true`）。主 Agent
+识别到用户明确要求快速、简单、尽快或直接出图时传 `false`；Core 仍执行代码生成与
+渲染校验，但首次成功渲染后立即发布结果，不调用视觉/代码验证模型，也不会产生
+`verification.delta` 或 `round_*_verify_raw.txt`。该参数仅作用于本次创建，不修改
+Session 的默认验证模式；新建和修改均遵循相同规则。
 
 ## 当前限制
 

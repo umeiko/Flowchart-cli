@@ -16,6 +16,7 @@ from .models import (
     ClientResourceUpdate,
     ClientResourceGenerate,
     ClientResourceView,
+    ContextView,
     DiagramView,
     FileView,
     RunCreate,
@@ -444,6 +445,25 @@ def create_app(
         return [MessageView(role=row["role"], content=row["content"],
                             attachments=json.loads(row["attachments"]), created_at=row["created_at"])
                 for row in rows]
+
+    @app.get(
+        "/v1/sessions/{session_id}/context",
+        response_model=ContextView,
+        tags=["sessions"],
+    )
+    def session_context(session_id: str) -> ContextView:
+        return ContextView(**service.context_stats(session_id))
+
+    @app.post(
+        "/v1/sessions/{session_id}/context/compact",
+        response_model=ContextView,
+        tags=["sessions"],
+    )
+    def compact_session_context(session_id: str) -> ContextView:
+        try:
+            return ContextView(**service.compact_context(session_id))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}", response_model=SessionView, tags=["sessions"])
     def read_session(session_id: str) -> SessionView:

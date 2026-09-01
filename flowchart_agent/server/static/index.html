@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flowchart Agent</title>
-  <link rel="stylesheet" href="/static/app.css?v=user-settings">
+  <link rel="stylesheet" href="/static/app.css?v=tool-details">
 </head>
 <body>
   <main class="shell">
@@ -53,6 +53,10 @@
             <span>＋ 附件</span>
           </label>
           <div id="attachments" class="attachments"></div>
+          <div class="context-controls" title="上下文长度为近似估算，不代表供应商计费 token">
+            <span id="context-status">上下文 --</span>
+            <button id="compact-context" type="button">压缩</button>
+          </div>
           <textarea id="prompt" rows="3" placeholder="例如：画一个带验证码和失败重试的登录流程（Enter 生成，Shift+Enter 换行）" required></textarea>
           <button id="send" type="submit">生成</button>
           <button id="stop" class="stop-run hidden" type="button">停止</button>
@@ -116,6 +120,22 @@
       </div>
     </form>
   </dialog>
+  <dialog id="tool-detail-dialog" class="tool-detail-dialog">
+    <div class="tool-detail-shell">
+      <header class="tool-detail-head">
+        <div><p class="eyebrow">TOOL CALL</p><h2 id="tool-detail-title">工具调用详情</h2><p id="tool-detail-meta" class="tool-detail-meta"></p></div>
+        <button id="tool-detail-close" class="tool-detail-close" type="button" aria-label="关闭工具调用详情">×</button>
+      </header>
+      <section class="tool-detail-section">
+        <div class="tool-detail-section-head"><span>模型请求</span><small>传给工具的参数</small></div>
+        <pre id="tool-detail-request" tabindex="0"></pre>
+      </section>
+      <section class="tool-detail-section">
+        <div class="tool-detail-section-head"><span>工具返回</span><small>返回给模型的结果</small></div>
+        <pre id="tool-detail-result" tabindex="0"></pre>
+      </section>
+    </div>
+  </dialog>
   <dialog id="auth-dialog" class="resource-dialog auth-dialog">
     <form id="auth-form">
       <p class="eyebrow">FLOWCHART AGENT</p><h2>登录工作台</h2>
@@ -143,6 +163,6 @@
   <dialog id="delete-session-dialog" class="resource-dialog danger-dialog">
     <form id="delete-session-form"><p class="eyebrow">DANGER ZONE</p><h2>永久删除会话？</h2><p id="delete-session-message" class="dialog-warning"></p><p class="dialog-help">会话历史、附件、生成文件及客户端资源将被永久删除，此操作不可恢复。</p><div class="dialog-actions"><button id="delete-session-cancel" class="text-button" type="button">取消</button><button class="danger-confirm" type="submit">永久删除</button></div></form>
   </dialog>
-  <script src="/static/app.js?v=user-settings" defer></script>
+  <script src="/static/app.js?v=fast-verify-tool-order" defer></script>
 </body>
 </html>

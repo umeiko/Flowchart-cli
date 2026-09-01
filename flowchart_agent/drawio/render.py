@@ -11,6 +11,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ..cancellation import CancelCheck, run_cancellable_process
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,7 @@ def render_drawio(
     drawio_path: str | None,
     fmt: str = "png",
     scale: int = 2,
+    should_cancel: CancelCheck = None,
 ) -> Path | None:
     """用 draw.io CLI 把 .drawio 导出为图片，返回产物路径；失败返回 None。
 
@@ -70,8 +73,8 @@ def render_drawio(
 
     logger.info("[drawio] 渲染 %s -> %s", drawio_file, output)
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, timeout=180,
+        proc = run_cancellable_process(
+            cmd, timeout=180, should_cancel=should_cancel,
             encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:

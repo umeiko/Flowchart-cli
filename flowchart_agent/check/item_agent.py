@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..cancellation import CancelCheck, raise_if_cancelled
 from ..llm import LLMClient
 from .items import CheckItem
 
@@ -46,8 +47,11 @@ def _strip_verdict_line(reply: str, default: str) -> str:
 class ItemCheckAgent:
     """执行单个检查项的子 Agent。"""
 
-    def __init__(self, vision_llm: LLMClient):
+    def __init__(
+        self, vision_llm: LLMClient, should_cancel: CancelCheck = None
+    ):
         self._vision = vision_llm
+        self._should_cancel = should_cancel
 
     def run(
         self,
@@ -75,7 +79,10 @@ class ItemCheckAgent:
         prompt = item.prompt.format(document=document)
         results = []
         for img in applicable:
-            reply = self._vision.chat_with_image(prompt, img).strip()
+            raise_if_cancelled(self._should_cancel)
+            reply = self._vision.chat_with_image(
+                prompt, img, should_cancel=self._should_cancel
+            ).strip()
             verdict = _verdict_of(reply)
             findings = _strip_verdict_line(
                 reply, {"通过": "通过", "不符合该分类": "不适用"}.get(verdict, "")

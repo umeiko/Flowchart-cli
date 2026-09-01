@@ -10,6 +10,7 @@ import json
 import logging
 import re
 
+from .cancellation import CancelCheck, OperationCancelled
 from .llm import LLMClient
 from . import prompts
 
@@ -18,7 +19,12 @@ logger = logging.getLogger(__name__)
 _VALID = ("generate", "check", "chat")
 
 
-def route_category(llm: LLMClient, user_input: str, has_images: bool = False) -> str | None:
+def route_category(
+    llm: LLMClient,
+    user_input: str,
+    has_images: bool = False,
+    should_cancel: CancelCheck = None,
+) -> str | None:
     """返回 generate / check / chat；无法确定时返回 None。"""
     images_note = "（用户同时附带了图片。）" if has_images else ""
     reply = llm.chat(
@@ -30,7 +36,8 @@ def route_category(llm: LLMClient, user_input: str, has_images: bool = False) ->
                     user_input=user_input, images_note=images_note
                 ),
             },
-        ]
+        ],
+        should_cancel=should_cancel,
     )
     m = re.search(r"\{.*\}", reply, re.DOTALL)
     if not m:
@@ -57,7 +64,9 @@ _FLOW_KEYWORDS = ("流程", "步骤", "判断", "是否", "开始", "结束", "�
 _ARCH_KEYWORDS = ("架构", "分层", "层级", "模块", "子系统", "组成", "层")
 
 
-def route_diagram_type(llm: LLMClient, document: str) -> str:
+def route_diagram_type(
+    llm: LLMClient, document: str, should_cancel: CancelCheck = None
+) -> str:
     """判断文档要画 flowchart 还是 architecture（drawio 引擎的二级路由）。
 
     LLM JSON 分类；解析失败时按关键词命中数兜底，平局归 architecture。
@@ -72,7 +81,8 @@ def route_diagram_type(llm: LLMClient, document: str) -> str:
                         document=document[:4000]
                     ),
                 },
-            ]
+            ],
+            should_cancel=should_cancel,
         )
         m = re.search(r"\{.*\}", reply, re.DOTALL)
         if m:
@@ -82,6 +92,8 @@ def route_diagram_type(llm: LLMClient, document: str) -> str:
                 logger.info("[route] 图型分类：%s（%s）", dtype, data.get("reason", ""))
                 return dtype
         logger.warning("[route] 图型分类输出无法解析，回退关键词兜底：%s", reply[:120])
+    except OperationCancelled:
+        raise
     except Exception as e:  # 分类失败不应阻断主流程
         logger.warning("[route] 图型分类调用失败，回退关键词兜底：%s", e)
     flow_hits = sum(1 for k in _FLOW_KEYWORDS if k in document)

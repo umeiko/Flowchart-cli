@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from ..cancellation import CancelCheck, raise_if_cancelled
 from ..images import validate_image
 from ..llm import LLMClient
 from ..prompts import OCR_PROMPT
@@ -19,6 +20,14 @@ _MAX_FIND_RESULTS = 20
 _MAX_GREP_RESULTS = 50
 _MAX_FIND_WALK = 5000  # 最多遍历的文件数，防止在大目录里卡死
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def _format_file_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def resolve_readable_path(
@@ -83,7 +92,10 @@ def _writable_path(path: str, root: Path) -> Path:
     return p
 
 
-def write_file(path: str, content: str, root: Path) -> str:
+def write_file(
+    path: str, content: str, root: Path, should_cancel: CancelCheck = None
+) -> str:
+    raise_if_cancelled(should_cancel)
     try:
         p = _writable_path(path, root)
     except ValueError as e:
@@ -94,7 +106,9 @@ def write_file(path: str, content: str, root: Path) -> str:
 
 
 def replace_in_file(path: str, old_text: str, new_text: str, root: Path,
-                    replace_all: bool = False) -> str:
+                    replace_all: bool = False,
+                    should_cancel: CancelCheck = None) -> str:
+    raise_if_cancelled(should_cancel)
     try:
         p = _writable_path(path, root)
     except ValueError as e:
@@ -122,7 +136,9 @@ def grep_files(
     file_glob: str = "",
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
 ) -> str:
+    raise_if_cancelled(should_cancel)
     try:
         rx = re.compile(pattern)
     except re.error as e:
@@ -139,6 +155,7 @@ def grep_files(
     walked = 0
     for search_root in roots:
         for p in search_root.rglob(file_glob or "*"):
+            raise_if_cancelled(should_cancel)
             relative_parts = p.relative_to(search_root).parts
             if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
                 continue
@@ -149,9 +166,11 @@ def grep_files(
                 lines = p.read_text(encoding="utf-8").splitlines()
             except (UnicodeDecodeError, OSError):
                 continue  # 跳过二进制/非 UTF-8 文件
+            size_label = _format_file_size(p.stat().st_size)
             for i, line in enumerate(lines, 1):
+                raise_if_cancelled(should_cancel)
                 if rx.search(line):
-                    results.append(f"{p}:{i}: {line.strip()[:150]}")
+                    results.append(f"{p}:{i}: [{size_label}] {line.strip()[:150]}")
                     if len(results) >= _MAX_GREP_RESULTS:
                         break
             if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
@@ -185,7 +204,9 @@ def read_document(
     path: str,
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
 ) -> str:
+    raise_if_cancelled(should_cancel)
     try:
         p = resolve_readable_path(path, root, readable_roots)
     except ValueError as e:
@@ -202,7 +223,9 @@ def read_document(
     if p.stat().st_size > _MAX_DOC_BYTES:
         return f"错误：文件超过 200KB，请精简后再试：{path}"
     try:
-        return p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8")
+        raise_if_cancelled(should_cancel)
+        return text
     except UnicodeDecodeError:
         return f"错误：不是 UTF-8 文本文件：{path}"
 
@@ -212,7 +235,9 @@ def find_files(
     directory: str = ".",
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
 ) -> str:
+    raise_if_cancelled(should_cancel)
     try:
         roots = _search_roots(directory, root, readable_roots)
     except ValueError as e:
@@ -223,13 +248,14 @@ def find_files(
     walked = 0
     for search_root in roots:
         for p in search_root.rglob("*"):
+            raise_if_cancelled(should_cancel)
             relative_parts = p.relative_to(search_root).parts
             if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
                 continue
             if p.is_file():
                 walked += 1
                 if keyword.lower() in p.name.lower():
-                    matches.append(str(p))
+                    matches.append(f"{p} | size={_format_file_size(p.stat().st_size)}")
                 if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
                     break
         if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
@@ -244,6 +270,7 @@ def _make_ocr_handler(
     llm: LLMClient,
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
 ):
     """ocr_image 工具的 handler：用多模态验证模型从图片提取文字。"""
 
@@ -252,7 +279,9 @@ def _make_ocr_handler(
             p = validate_image(resolve_readable_path(path, root, readable_roots))
         except ValueError as e:
             return f"错误：{e}"
-        return llm.chat_with_image(OCR_PROMPT, p)
+        return llm.chat_with_image(
+            OCR_PROMPT, p, should_cancel=should_cancel
+        )
 
     return ocr_image
 
@@ -298,6 +327,7 @@ def build_skills(
     command_runner: CommandRunner | None = None,
     readable_root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
+    should_cancel: CancelCheck = None,
 ) -> list[Skill]:
     """构建主 Agent 的工具表。ocr_llm 不为 None 时注册 ocr_image
     （主模型无视觉能力时，用多模态验证模型做图片文字提取）；
@@ -306,7 +336,12 @@ def build_skills(
     skills = [
         Skill(
             name="read_document",
-            description="读取本地需求文档（.txt/.md 等 UTF-8 文本文件），返回全文内容。",
+            description=(
+                "读取本地需求文档（.txt/.md 等 UTF-8 文本文件），返回全文内容。"
+                "全文会进入当前 Agent 上下文；主 Agent 若从 find_files/grep_files 发现文件"
+                "较大（建议 32KB 以上），应优先调用 delegate_task 交给子 Agent 提炼，"
+                "不要直接读取全文。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -315,14 +350,15 @@ def build_skills(
                 "required": ["path"],
             },
             handler=partial(
-                read_document, root=readable_root, readable_roots=readable_roots
+                read_document, root=readable_root, readable_roots=readable_roots,
+                should_cancel=should_cancel,
             ),
         ),
         Skill(
             name="find_files",
             description=(
                 "按文件名关键词在目录中模糊查找文件，用于用户给出的路径有误时"
-                "自行猜测正确文件。返回匹配的文件路径列表。"
+                "自行猜测正确文件。返回匹配的文件路径与文件大小。"
             ),
             parameters={
                 "type": "object",
@@ -337,7 +373,8 @@ def build_skills(
                 "required": ["keyword"],
             },
             handler=partial(
-                find_files, root=readable_root, readable_roots=readable_roots
+                find_files, root=readable_root, readable_roots=readable_roots,
+                should_cancel=should_cancel,
             ),
         ),
         Skill(
@@ -355,7 +392,9 @@ def build_skills(
                 },
                 "required": ["path", "content"],
             },
-            handler=partial(write_file, root=writable_root),
+            handler=partial(
+                write_file, root=writable_root, should_cancel=should_cancel
+            ),
         ),
         Skill(
             name="replace_in_file",
@@ -378,13 +417,16 @@ def build_skills(
                 },
                 "required": ["path", "old_text", "new_text"],
             },
-            handler=partial(replace_in_file, root=writable_root),
+            handler=partial(
+                replace_in_file, root=writable_root, should_cancel=should_cancel
+            ),
         ),
         Skill(
             name="grep_files",
             description=(
                 "按正则表达式搜索文件内容，返回 文件:行号: 匹配行。"
-                "用于在中间文档/代码中定位内容（配合 replace_in_file 修改）。"
+                "每条结果包含文件大小，用于在中间文档/代码中定位内容"
+                "（配合 replace_in_file 修改）。"
             ),
             parameters={
                 "type": "object",
@@ -404,7 +446,8 @@ def build_skills(
                 "required": ["pattern"],
             },
             handler=partial(
-                grep_files, root=readable_root, readable_roots=readable_roots
+                grep_files, root=readable_root, readable_roots=readable_roots,
+                should_cancel=should_cancel,
             ),
         ),
         Skill(
@@ -430,6 +473,9 @@ def build_skills(
             description=(
                 "根据完整的需求描述创建一张新的流程图（内部会自动完成"
                 "生成→渲染校验→视觉验证的循环）。仅在用户提出新图需求时调用。"
+                "当用户明确要求快速作图、简单图、尽快出结果或不需要验证时，"
+                "传 visual_verification=false：成功渲染后立即返回，不进行视觉/代码验证；"
+                "其他情况保持 true。"
                 "若用户提供了参考图片路径，通过 image_path 传入；"
                 "若用户有风格倾向，先 list_styles 发现可用模板并经 style 传入；"
                 "若用户明确要求画布背景颜色，通过 background 传入；"
@@ -454,6 +500,14 @@ def build_skills(
                     "background": {
                         "type": "string",
                         "description": "可选：画布背景色，如 white、#1e1e1e；仅在用户明确要求时设置",
+                    },
+                    "visual_verification": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "是否在成功渲染后继续视觉/代码验证。默认 true；"
+                            "用户要求快速、简单、尽快出图或明确不要验证时设为 false"
+                        ),
                     },
                     "node_width": {
                         "type": "integer",
@@ -589,7 +643,9 @@ def build_skills(
             name="modify_diagram",
             description=(
                 "按用户的修改意见调整当前流程图（内部同样会渲染校验并视觉验证）。"
-                "仅在已有图且用户提出修改时调用。"
+                "仅在已有图且用户提出修改时调用。用户要求快速修改、尽快改好、"
+                "直接给结果或不需要验证时，传 visual_verification=false，"
+                "成功渲染后立即返回；其他情况保持 true。"
             ),
             parameters={
                 "type": "object",
@@ -597,6 +653,14 @@ def build_skills(
                     "instruction": {
                         "type": "string",
                         "description": "用户的修改意见，如：把登录改为验证码登录",
+                    },
+                    "visual_verification": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "是否在成功渲染后继续视觉/代码验证。默认 true；"
+                            "用户要求快速修改、尽快返回或明确不要验证时设为 false"
+                        ),
                     },
                 },
                 "required": ["instruction"],
@@ -733,7 +797,7 @@ def build_skills(
                     "required": ["path"],
                 },
                 handler=_make_ocr_handler(
-                    ocr_llm, readable_root, readable_roots
+                    ocr_llm, readable_root, readable_roots, should_cancel
                 ),
             )
         )

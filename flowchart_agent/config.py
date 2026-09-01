@@ -23,6 +23,9 @@ class ModelConfig:
 @dataclass(frozen=True)
 class Settings:
     text_model: ModelConfig
+    # 主 Agent 上下文窗口，用于 UI 占用估算与压缩提示。不同兼容端点无法统一
+    # 返回精确 tokenizer 结果，因此这里只作为容量参考，不参与供应商计费。
+    context_window: int = 128000
     # 多模态（视觉）模型；None = 未配置——视觉检视自动降级为代码检视（VERIFY_MODE=code），
     # ocr_image 工具不可用
     vision_model: ModelConfig | None = None
@@ -93,6 +96,7 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
             api_key=_require("TEXT_MODEL_API_KEY"),
             base_url=_require("TEXT_MODEL_BASE_URL"),
         ),
+        context_window=max(1, int(os.getenv("TEXT_MODEL_CONTEXT_WINDOW", "128000"))),
         vision_model=_load_vision_model(),
         max_rounds=int(os.getenv("MAX_ROUNDS", "5")),
         output_format=os.getenv("OUTPUT_FORMAT", "png"),
