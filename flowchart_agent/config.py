@@ -31,6 +31,9 @@ class Settings:
     vision_model: ModelConfig | None = None
     text_model_vision: bool = False  # 文本（生成）模型是否具备原生多模态能力
     max_rounds: int = 5
+    # 文件子 Agent 允许的 function-calling 回合数；一回合可包含多个工具调用。
+    # 图片质检在部分兼容端点上会退化为每回合只调用一个工具，因此默认高于主 Agent。
+    max_subagent_tool_iterations: int = 24
     output_format: str = "png"
     render_background: str = "white"  # 画布背景色（mmdc -b），默认白色不用透明
     # mmdc 渲染使用的 Chrome 可执行文件路径（puppeteer executablePath）。
@@ -99,6 +102,9 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
         context_window=max(1, int(os.getenv("TEXT_MODEL_CONTEXT_WINDOW", "128000"))),
         vision_model=_load_vision_model(),
         max_rounds=int(os.getenv("MAX_ROUNDS", "5")),
+        max_subagent_tool_iterations=max(
+            1, int(os.getenv("MAX_SUBAGENT_TOOL_ITERATIONS", "24"))
+        ),
         output_format=os.getenv("OUTPUT_FORMAT", "png"),
         render_background=os.getenv("RENDER_BACKGROUND", "white"),
         chrome_path=os.getenv("CHROME_PATH") or None,

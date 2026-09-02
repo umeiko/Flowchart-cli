@@ -44,7 +44,7 @@ flowchart TD
 - **风格转换 Agent**：`换成深色风格`、`按这个文档调整风格` —— 只改样式层不改内容，骨架校验机械保证节点/连线/文字零改动；风格来源可以是现有模板（`style_name`）或口述/文档输入的风格要求（`style_document`）
 - **技能包（Skill Packs）**：`skills/` 目录下每个带 frontmatter 的 `.md` 就是一个提示词型技能，主 Agent 遇到陌生领域任务时自己发现并遵照执行；从社区看到好用的 SKILL，丢进目录即可用。
 - **文档检视**：说"检查这份文档/这张图"即可。检查路由把当前 Session 中 `kind: check` Skill 的完整执行协议交给唯一文件子 Agent；Core 只提供通用流式 `image_reasoning(prompt, image_paths)`，不再写死图片描述、检查项循环或 PASS/FAIL 判定。子 Agent 按 Skill 决定读取哪些文档、如何调用视觉模型及如何写 CSV。WebUI/TUI 把每次图像推理显示为可展开工具，Web 工具详情会实时刷新视觉模型推理和输出。批量任务先由短规划子 Agent 写 `batch_plan.json` 并退出，再逐案例启动独立检查，避免长文档和模型上下文跨案例累计。报告与批量计划位于 `output/generate/check_results/`、`output/generate/batch_plans/`。
-- **文件读写**：主 Agent 与文件子 Agent 共用固定两级 tree 的 `list_dir`，并提供 `write_file` / `replace_in_file` / `grep_files` 等文件工具，可低成本了解批量素材目录结构后再查找或读取（写入仅限产物目录内，相对路径自动落在产物目录下）
+- **文件读写**：主 Agent 与文件子 Agent 共用固定两级 tree 的 `list_dir`，并提供 `write_file` / `replace_in_file` / `grep_files` 等文件工具，可低成本了解批量素材目录结构后再查找或读取。Server 只搜索当前 Session 节点并向模型返回相对路径；TUI 保留本机绝对路径。子 Agent 工具回合默认上限为 24，可用 `MAX_SUBAGENT_TOOL_ITERATIONS` 调整
 - **命令执行（冒险功能）**：用户明确要求时，主 Agent 可用 `run_command` 跑单行 shell 命令（格式转换、批量处理等）。每条命令默认红框展示、方向键选「是/否」确认，命令统一在产物目录下执行，执行中 Ctrl+C 直接杀掉进程；启动加 `--yolo` 或会话中输入 `/yolo` 可免确认（谨慎）
 
 ## 安装

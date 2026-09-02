@@ -145,7 +145,9 @@ TUI 对应 `/context` 和 `/compact` 命令，其摘要仅在当前 TUI 进程�
 主 Agent 与子 Agent 共用 `list_dir`；子 Agent 还固定拥有 `read_document`、`find_files`、`grep_files`、`write_file`、
 `replace_in_file`；根据模型与界面配置附加 `read_image`、`ocr_image`、`run_command`。
 `list_dir` 以固定两级 tree 展示目录，目录优先且文件附带大小，不读取文件内容；两端使用
-同一实现与 Session 路径边界。
+同一实现与 Session 路径边界。Server 为主/子 Agent 额外注入 Session 路径策略：文件工具
+只能搜索 `workspace/`、`attachments/`、`generate/`、`check/`，参数和结果均使用 Session
+相对路径，不向模型或 WebUI 暴露部署机器绝对路径；TUI 保留本机绝对路径表现。
 配置视觉模型时，文件子 Agent 额外获得通用 `image_reasoning` 工具。参数只有视觉模型
 prompt 和当前 Session 内的图片路径；工具本身不知道检查项、适用分类、PASS/FAIL/NA 或
 CSV 格式。检查路由会把当前 Session 中完整的 `kind: check` Skill 交给子 Agent，由 Skill
@@ -162,7 +164,10 @@ case 的子 Agent 通过 `image_reasoning` 得到结论并将 CSV 写到
 `batch_plans/*_summary.json`。目录扫描、图文配对和实际检查协议均由 Skill 维护。
 它不能生成流程图、修改配置、加载 Skill/Style，也不能再创建子 Agent。Server 不提供
 `run_command`，TUI 仍沿用命令确认机制。`find_files` 和 `grep_files` 的结果包含文件大小，
-供主 Agent 判断是否应委派。
+供主 Agent 判断是否应委派。子 Agent 的上限按“返回工具调用的模型回合”计数，而不是按
+单个工具计数；默认 `MAX_SUBAGENT_TOOL_ITERATIONS=24`。部分兼容端点每回合只发一个工具
+调用，检查项很多时可在 `.env` 中提高到 48 等值；达到上限的错误会同时报告工具回合数
+与累计工具调用数。
 
 ## Client Skills / Styles
 

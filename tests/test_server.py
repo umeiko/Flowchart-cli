@@ -5,6 +5,7 @@ import io
 import sqlite3
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,6 +75,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
             "SERVER_PORT=9876",
             "SERVER_OUTPUT=web-output",
             "SERVER_DATA_DIR=web-data",
+            "MAX_SUBAGENT_TOOL_ITERATIONS=37",
         ]),
         encoding="utf-8",
     )
@@ -85,6 +87,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         "SERVER_PORT": "9876",
         "SERVER_OUTPUT": "web-output",
         "SERVER_DATA_DIR": "web-data",
+        "MAX_SUBAGENT_TOOL_ITERATIONS": "37",
     }.items():
         monkeypatch.setenv(key, value)
     captured = {}
@@ -94,7 +97,8 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         cli_module,
         "_run_server",
         lambda settings, host, port, output, data: captured.update(
-            host=host, port=port, output=output, data=data
+            host=host, port=port, output=output, data=data,
+            max_subagent_tool_iterations=settings.max_subagent_tool_iterations,
         ) or 0,
     )
 
@@ -104,6 +108,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         "port": 9876,
         "output": Path("web-output"),
         "data": Path("web-data"),
+        "max_subagent_tool_iterations": 37,
     }
 
 
@@ -542,11 +547,25 @@ def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
     assert tools["read_document"].handler(path="workspace/inside.md") == "SESSION_ONLY_MARKER"
     find_result = tools["find_files"].handler(keyword="inside")
     grep_result = tools["grep_files"].handler(pattern="SESSION_ONLY")
-    assert "inside.md" in find_result and "size=" in find_result
+    assert "workspace/inside.md" in find_result and "size=" in find_result
+    assert "workspace/inside.md:1" in grep_result
     assert "SESSION_ONLY_MARKER" in grep_result and "[19 B]" in grep_result
+    assert str(state.root) not in find_result
+    assert str(state.root) not in grep_result
+    assert str(state.root) not in tools["find_files"].handler(keyword="missing")
+    write_result = tools["write_file"].handler(path="notes.md", content="before")
+    replace_result = tools["replace_in_file"].handler(
+        path="notes.md", old_text="before", new_text="after"
+    )
+    assert "generate/notes.md" in write_result
+    assert "generate/notes.md" in replace_result
+    assert str(state.root) not in write_result
+    assert str(state.root) not in replace_result
     assert "delegate_task" in tools
     assert "list_dir" in tools
     assert "32KB" in tools["read_document"].description
+    assert "Session 相对路径" in tools["find_files"].description
+    assert "Session 相对路径" in state.agent._messages[0]["content"]
     assert state.agent._subagent.tool_names == {
         "list_dir", "read_document", "find_files", "grep_files", "write_file",
         "replace_in_file",
@@ -572,7 +591,8 @@ def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
 
     # Local TUI callers omit the sandbox arguments and retain explicit local-file access.
     assert read_document(str(server_secret)) == "SERVER_SECRET_MARKER"
-    assert "server-secret.txt" in find_files("server-secret", str(tmp_path))
+    tui_find = find_files("server-secret", str(tmp_path))
+    assert str(server_secret.resolve()) in tui_find
 
 
 def test_tui_default_resource_paths_remain_compatible(tmp_path, monkeypatch):
@@ -624,6 +644,7 @@ def test_file_subagent_runs_restricted_tool_loop_and_emits_events(tmp_path):
     ):
         nonlocal calls
         calls += 1
+        assert "Session 相对路径" in messages[0]["content"]
         if calls == 1:
             arguments = '{"keyword":"large"}'
             on_reasoning("先查找目标文件")
@@ -656,6 +677,61 @@ def test_file_subagent_runs_restricted_tool_loop_and_emits_events(tmp_path):
     assert "requirements.txt (12 B)" in tree
     assert "flowchart/" in tree
     assert "too-deep.txt" not in tree
+
+
+def test_file_subagent_tool_turn_limit_is_configurable_and_above_legacy_eight(tmp_path):
+    settings = replace(_settings(), max_subagent_tool_iterations=12)
+    app = create_app(
+        settings, data_root=tmp_path / "data", workspace_root=tmp_path / "output"
+    )
+    client = TestClient(app)
+    _register(client, "subagent-long-loop-user")
+    session_id = client.post("/v1/sessions", json={}).json()["id"]
+    subagent = app.state.agent_service.get_session(session_id).agent._subagent
+    calls = 0
+
+    def fake_chat(messages, tools, on_delta, on_tick=None, on_reasoning=None,
+                  should_cancel=None):
+        nonlocal calls
+        calls += 1
+        if calls <= 9:
+            arguments = '{"keyword":"missing"}'
+            tool_call = SimpleNamespace(
+                id=f"call_{calls}",
+                function=SimpleNamespace(name="find_files", arguments=arguments),
+                model_dump=lambda: {
+                    "id": f"call_{calls}",
+                    "type": "function",
+                    "function": {"name": "find_files", "arguments": arguments},
+                },
+            )
+            return SimpleNamespace(content="", tool_calls=[tool_call])
+        return SimpleNamespace(content="九个工具回合后正常完成", tool_calls=[])
+
+    subagent._llm.chat_with_tools_stream = fake_chat
+
+    assert subagent.run("模拟串行工具模型") == "九个工具回合后正常完成"
+    assert calls == 10
+
+    limited = replace(_settings(), max_subagent_tool_iterations=2)
+    limited_app = create_app(
+        limited, data_root=tmp_path / "limited-data",
+        workspace_root=tmp_path / "limited-output",
+    )
+    limited_client = TestClient(limited_app)
+    _register(limited_client, "subagent-limited-user")
+    limited_session = limited_client.post("/v1/sessions", json={}).json()["id"]
+    limited_subagent = limited_app.state.agent_service.get_session(
+        limited_session
+    ).agent._subagent
+    limited_subagent._llm.chat_with_tools_stream = fake_chat
+    calls = 0
+
+    result = limited_subagent.run("模拟达到配置上限")
+
+    assert "2 个工具回合" in result
+    assert "累计 2 次工具调用" in result
+    assert "MAX_SUBAGENT_TOOL_ITERATIONS" in result
 
 
 def test_file_subagent_can_limit_tools_for_short_planning_task(tmp_path):

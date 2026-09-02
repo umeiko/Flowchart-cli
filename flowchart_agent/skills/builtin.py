@@ -31,6 +31,19 @@ def _format_file_size(size: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+def _display_read_path(path: Path, root: Path | None) -> str:
+    """Server 返回 Session 相对路径；本地 TUI 保留历史绝对路径表现。"""
+    resolved = path.resolve()
+    if root is not None:
+        try:
+            relative = resolved.relative_to(Path(root).resolve())
+            return relative.as_posix() or "."
+        except ValueError:
+            # 正常情况下会先被 resolve_readable_path 拒绝；这里不回显意外绝对路径。
+            return path.name
+    return str(resolved)
+
+
 def resolve_readable_path(
     path: str | Path,
     root: Path | None = None,
@@ -94,7 +107,8 @@ def _writable_path(path: str, root: Path) -> Path:
 
 
 def write_file(
-    path: str, content: str, root: Path, should_cancel: CancelCheck = None
+    path: str, content: str, root: Path, display_root: Path | None = None,
+    should_cancel: CancelCheck = None,
 ) -> str:
     raise_if_cancelled(should_cancel)
     try:
@@ -103,11 +117,15 @@ def write_file(
         return f"错误：{e}"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    return f"文件已写入（{len(content)} 字符）：{p}"
+    return (
+        f"文件已写入（{len(content)} 字符）："
+        f"{_display_read_path(p, display_root)}"
+    )
 
 
 def replace_in_file(path: str, old_text: str, new_text: str, root: Path,
                     replace_all: bool = False,
+                    display_root: Path | None = None,
                     should_cancel: CancelCheck = None) -> str:
     raise_if_cancelled(should_cancel)
     try:
@@ -128,7 +146,10 @@ def replace_in_file(path: str, old_text: str, new_text: str, root: Path,
     text = text.replace(old_text, new_text) if replace_all \
         else text.replace(old_text, new_text, 1)
     p.write_text(text, encoding="utf-8")
-    return f"已在 {p} 中完成 {count if replace_all else 1} 处替换。"
+    return (
+        f"已在 {_display_read_path(p, display_root)} 中完成 "
+        f"{count if replace_all else 1} 处替换。"
+    )
 
 
 def grep_files(
@@ -171,7 +192,10 @@ def grep_files(
             for i, line in enumerate(lines, 1):
                 raise_if_cancelled(should_cancel)
                 if rx.search(line):
-                    results.append(f"{p}:{i}: [{size_label}] {line.strip()[:150]}")
+                    results.append(
+                        f"{_display_read_path(p, root)}:{i}: "
+                        f"[{size_label}] {line.strip()[:150]}"
+                    )
                     if len(results) >= _MAX_GREP_RESULTS:
                         break
             if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
@@ -179,7 +203,7 @@ def grep_files(
         if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
             break
     if not results:
-        scope = "、".join(str(item) for item in roots)
+        scope = "、".join(_display_read_path(item, root) for item in roots)
         return f"没有匹配 {pattern!r} 的内容（搜索范围：{scope}）"
     suffix = f"（已达 {_MAX_GREP_RESULTS} 条上限）" if len(results) >= _MAX_GREP_RESULTS else ""
     return f"找到 {len(results)} 处匹配{suffix}：\n" + "\n".join(results)
@@ -219,7 +243,9 @@ def read_document(
             names = [f.name for f in p.parent.iterdir() if f.is_file()]
             close = difflib.get_close_matches(p.name, names, n=3, cutoff=0.3)
             if close:
-                hint = "。你是不是想找：" + "、".join(str(p.parent / c) for c in close)
+                hint = "。你是不是想找：" + "、".join(
+                    _display_read_path(p.parent / c, root) for c in close
+                )
         return f"错误：文件不存在：{path}{hint}"
     if p.stat().st_size > _MAX_DOC_BYTES:
         return f"错误：文件超过 200KB，请精简后再试：{path}"
@@ -256,13 +282,16 @@ def find_files(
             if p.is_file():
                 walked += 1
                 if keyword.lower() in p.name.lower():
-                    matches.append(f"{p} | size={_format_file_size(p.stat().st_size)}")
+                    matches.append(
+                        f"{_display_read_path(p, root)} | "
+                        f"size={_format_file_size(p.stat().st_size)}"
+                    )
                 if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
                     break
         if len(matches) >= _MAX_FIND_RESULTS or walked >= _MAX_FIND_WALK:
             break
     if not matches:
-        scope = "、".join(str(item) for item in roots)
+        scope = "、".join(_display_read_path(item, root) for item in roots)
         return f"没有找到文件名包含 {keyword!r} 的文件（搜索范围：{scope}）"
     return "找到以下文件：\n" + "\n".join(matches)
 
@@ -367,7 +396,13 @@ def _make_read_image_handler(
             safe_path = resolve_readable_path(path, root, readable_roots)
         except ValueError as e:
             return f"错误：{e}"
-        return image_queue.add(str(safe_path))
+        result = image_queue.add(str(safe_path))
+        if result.startswith("错误："):
+            return result
+        return (
+            f"已读取图片 {_display_read_path(safe_path, root)}，"
+            "内容将在下一步对你可见。"
+        )
 
     return read_image
 
@@ -404,6 +439,11 @@ def build_skills(
     （主模型无视觉能力时，用多模态验证模型做图片文字提取）；
     command_runner 不为 None 时注册 run_command（界面层提供确认与进程管理）。"""
     writable_root = session.output_dir  # write_file/replace_in_file 的写入边界
+    session_path_hint = (
+        "服务端仅允许当前 Session，路径必须使用 workspace/、attachments/、generate/"
+        "或 check/ 开头的 Session 相对路径；返回结果也只显示相对路径。"
+        if readable_root is not None else ""
+    )
     skills = [
         Skill(
             name="read_document",
@@ -411,7 +451,7 @@ def build_skills(
                 "读取本地需求文档（.txt/.md 等 UTF-8 文本文件），返回全文内容。"
                 "全文会进入当前 Agent 上下文；主 Agent 若从 find_files/grep_files 发现文件"
                 "较大（建议 32KB 以上），应优先调用 delegate_task 交给子 Agent 提炼，"
-                "不要直接读取全文。"
+                "不要直接读取全文。" + session_path_hint
             ),
             parameters={
                 "type": "object",
@@ -430,6 +470,7 @@ def build_skills(
             description=(
                 "以 tree 形式列出目录的两级结构，目录优先、文件附带大小；"
                 "不读取文件内容，适合在查找、批量处理或委派前了解素材组织方式。"
+                + session_path_hint
             ),
             parameters={
                 "type": "object",
@@ -452,7 +493,7 @@ def build_skills(
             name="find_files",
             description=(
                 "按文件名关键词在目录中模糊查找文件，用于用户给出的路径有误时"
-                "自行猜测正确文件。返回匹配的文件路径与文件大小。"
+                "自行猜测正确文件。返回匹配的文件路径与文件大小。" + session_path_hint
             ),
             parameters={
                 "type": "object",
@@ -487,7 +528,8 @@ def build_skills(
                 "required": ["path", "content"],
             },
             handler=partial(
-                write_file, root=writable_root, should_cancel=should_cancel
+                write_file, root=writable_root, display_root=readable_root,
+                should_cancel=should_cancel,
             ),
         ),
         Skill(
@@ -512,7 +554,8 @@ def build_skills(
                 "required": ["path", "old_text", "new_text"],
             },
             handler=partial(
-                replace_in_file, root=writable_root, should_cancel=should_cancel
+                replace_in_file, root=writable_root, display_root=readable_root,
+                should_cancel=should_cancel,
             ),
         ),
         Skill(
@@ -520,7 +563,7 @@ def build_skills(
             description=(
                 "按正则表达式搜索文件内容，返回 文件:行号: 匹配行。"
                 "每条结果包含文件大小，用于在中间文档/代码中定位内容"
-                "（配合 replace_in_file 修改）。"
+                "（配合 replace_in_file 修改）。" + session_path_hint
             ),
             parameters={
                 "type": "object",

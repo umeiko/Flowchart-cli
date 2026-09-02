@@ -18,7 +18,6 @@ from .skills.builtin import resolve_readable_path
 
 logger = logging.getLogger(__name__)
 
-MAX_SUBAGENT_TOOL_ITERATIONS = 8
 MAX_SUBAGENT_RESULT_CHARS = 6000
 SUBAGENT_TOOL_NAMES = {
     "read_document",
@@ -42,6 +41,14 @@ find_files/grep_files 缩小范围，再读取必要文件；大文件只提炼
 与任务相关的内容，避免在最终结果中复述全文。写文件前先读取并确认依据。
 最终返回给主 Agent 的报告应简洁、可执行，必须包含关键发现、涉及路径、已做修改和未解决问题，
 通常控制在 2000 个中文字符以内。"""
+
+_SERVER_SESSION_PATH_POLICY = """
+
+[Server Session 文件策略]
+你只能访问当前 Session 的 `workspace/`、`attachments/`、`generate/` 和 `check/` 节点。
+调用文件工具和汇报结果时必须使用 Session 相对路径，例如 `workspace/需求.md`；禁止请求、
+猜测、复述或输出服务器绝对路径。`.` 仅表示当前 Session 的可读节点。
+"""
 
 
 class _SubAgentImages:
@@ -83,6 +90,10 @@ class FileSubAgent:
         self._images = _SubAgentImages(self._vision)
         self._readable_root = readable_root
         self._readable_roots = tuple(readable_roots or ())
+        self._max_tool_iterations = settings.max_subagent_tool_iterations
+        self._system_prompt = SUBAGENT_SYSTEM + (
+            _SERVER_SESSION_PATH_POLICY if readable_root is not None else ""
+        )
         self._image_reasoning_llm = (
             LLMClient(settings.vision_model) if settings.vision_model is not None else None
         )
@@ -211,11 +222,12 @@ class FileSubAgent:
                 if name in allowed
             ]
             messages = [
-                {"role": "system", "content": SUBAGENT_SYSTEM},
+                {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": task},
             ]
             override = None
-            for _ in range(MAX_SUBAGENT_TOOL_ITERATIONS):
+            tool_call_count = 0
+            for _ in range(self._max_tool_iterations):
                 if self._cancelled():
                     return self._finish("子 Agent 已停止。", status="cancelled")
                 request_messages = messages if override is None else messages[:-1] + [override]
@@ -232,6 +244,7 @@ class FileSubAgent:
                     return self._finish(msg.content or "子 Agent 已完成，但没有返回摘要。")
 
                 messages.append(self._assistant_message(msg))
+                tool_call_count += len(msg.tool_calls)
                 for call in msg.tool_calls:
                     name = call.function.name
                     self._emit("tool.started", name=name, arguments=call.function.arguments)
@@ -259,7 +272,12 @@ class FileSubAgent:
                             for path in pending
                         ],
                     }
-            return self._finish("子 Agent 连续工具调用次数过多，已停止并交回主 Agent。", status="failed")
+            return self._finish(
+                f"子 Agent 在 {self._max_tool_iterations} 个工具回合后仍未完成"
+                f"（累计 {tool_call_count} 次工具调用），已停止并交回主 Agent。"
+                "可在 .env 中提高 MAX_SUBAGENT_TOOL_ITERATIONS。",
+                status="failed",
+            )
         except OperationCancelled:
             return self._finish("子 Agent 已停止。", status="cancelled")
         except Exception as exc:

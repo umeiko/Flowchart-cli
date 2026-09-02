@@ -111,6 +111,15 @@ _VISION_OFF = (
     "提示用户在 .env 中把 TEXT_MODEL_VISION 设为 true 并使用支持图片输入的模型。"
 )
 
+_SERVER_SESSION_PATH_POLICY = """
+
+[Server Session 文件策略]
+你运行在服务端，只能访问当前 Session 的 `workspace/`、`attachments/`、`generate/`
+和 `check/` 节点。所有文件工具参数与回复都必须使用 Session 相对路径，例如
+`workspace/需求.md`；禁止猜测、请求、复述或向用户展示服务器绝对路径。`.` 仅代表当前
+Session 的上述可读节点，不代表服务进程工作目录或服务器磁盘根目录。
+"""
+
 
 class _PendingImages:
     """read_image 写入的图片队列；在下一次 LLM 调用时随消息发出（仅一次）。"""
@@ -215,6 +224,8 @@ class MainAgent:
         self._skills = {s.name: s for s in skills}
         self._tools = [s.to_openai_tool() for s in self._skills.values()]
         system = MAIN_SYSTEM + (_VISION_ON if self._vision else _VISION_OFF)
+        if readable_root is not None:
+            system += _SERVER_SESSION_PATH_POLICY
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._on_tool_call = on_tool_call  # 界面层用来展示工具调用过程
         self._on_tool_result = on_tool_result
