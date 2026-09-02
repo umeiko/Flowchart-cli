@@ -76,6 +76,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
             "SERVER_OUTPUT=web-output",
             "SERVER_DATA_DIR=web-data",
             "MAX_SUBAGENT_TOOL_ITERATIONS=37",
+            "MODEL_PROXY=http://127.0.0.1:7890",
         ]),
         encoding="utf-8",
     )
@@ -88,6 +89,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         "SERVER_OUTPUT": "web-output",
         "SERVER_DATA_DIR": "web-data",
         "MAX_SUBAGENT_TOOL_ITERATIONS": "37",
+        "MODEL_PROXY": "http://127.0.0.1:7890",
     }.items():
         monkeypatch.setenv(key, value)
     captured = {}
@@ -99,6 +101,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         lambda settings, host, port, output, data: captured.update(
             host=host, port=port, output=output, data=data,
             max_subagent_tool_iterations=settings.max_subagent_tool_iterations,
+            model_proxy=settings.text_model.proxy,
         ) or 0,
     )
 
@@ -109,6 +112,7 @@ def test_server_cli_reads_startup_parameters_from_env(tmp_path, monkeypatch):
         "output": Path("web-output"),
         "data": Path("web-data"),
         "max_subagent_tool_iterations": 37,
+        "model_proxy": "http://127.0.0.1:7890",
     }
 
 

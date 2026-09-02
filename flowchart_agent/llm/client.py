@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from openai import OpenAI
+from openai import DefaultHttpxClient, OpenAI
 
 from ..cancellation import (
     CancelCheck,
@@ -156,7 +156,14 @@ class LLMClient:
         with self._client_lock:
             if self._client is None:
                 self._client = OpenAI(
-                    api_key=self._model.api_key, base_url=self._model.base_url
+                    api_key=self._model.api_key,
+                    base_url=self._model.base_url,
+                    # 公司桌面通常注册了系统代理，但模型网关往往位于内网。
+                    # 默认明确直连；只有 MODEL_PROXY 显式配置时才使用代理。
+                    http_client=DefaultHttpxClient(
+                        proxy=self._model.proxy,
+                        trust_env=False,
+                    ),
                 )
             return self._client
 

@@ -83,7 +83,8 @@ cp .env.example .env
 # 编辑 .env
 ```
 
-`.env` 中各项含义见 `.env.example` 注释。公司 Windows 环境 mmdc 因 puppeteer 自带
+`.env` 中各项含义见 `.env.example` 注释。模型 API 默认忽略系统代理并直连内网
+`BASE_URL`；只有显式设置 `MODEL_PROXY` 时才会走指定代理。公司 Windows 环境 mmdc 因 puppeteer 自带
 Chromium 不可用而报错时，设置 `CHROME_PATH` 指向本机 `chrome.exe`（或 Edge），工具会
 自动生成 puppeteer 配置并用 `-p` 渲染，详见 `docs/DEPLOYMENT.md` §5.3。
 

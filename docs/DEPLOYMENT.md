@@ -179,6 +179,8 @@ CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
 
 内网必须能访问 `.env` 中配置的两个 `BASE_URL`。若公司有自己的模型网关，
 直接把 `TEXT_MODEL_BASE_URL` / `VISION_MODEL_BASE_URL` 指向内网网关（OpenAI 兼容协议）即可，
+模型请求默认忽略 Windows/macOS/Linux 的系统代理并直接连接网关。仅当模型 API 本身需要
+代理时才在 `.env` 设置 `MODEL_PROXY=http://proxy-host:port`，该配置同时作用于文本和视觉模型。
 多模态模型需支持图片输入（如 qwen-vl 系列、gpt-4o 系列）。
 
 ## 6. 部署后验证清单

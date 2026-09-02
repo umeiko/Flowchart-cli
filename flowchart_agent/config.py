@@ -18,6 +18,8 @@ class ModelConfig:
     name: str
     api_key: str
     base_url: str
+    # 模型 API 代理。None 表示直连；LLM 客户端始终忽略系统代理环境变量。
+    proxy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,13 +75,13 @@ def _require(key: str) -> str:
     return value
 
 
-def _load_vision_model() -> ModelConfig | None:
+def _load_vision_model(proxy: str | None = None) -> ModelConfig | None:
     """视觉模型可选：三项配置齐全才加载，否则返回 None（检视降级为 code 模式）。"""
     name = os.getenv("VISION_MODEL_NAME")
     api_key = os.getenv("VISION_MODEL_API_KEY")
     base_url = os.getenv("VISION_MODEL_BASE_URL")
     if name and api_key and base_url:
-        return ModelConfig(name=name, api_key=api_key, base_url=base_url)
+        return ModelConfig(name=name, api_key=api_key, base_url=base_url, proxy=proxy)
     return None
 
 
@@ -93,14 +95,16 @@ def load_settings(env_path: str | Path | None = None) -> Settings:
         )
         env_path = next((p for p in candidates if p.is_file()), candidates[-1])
     load_dotenv(env_path)
+    model_proxy = (os.getenv("MODEL_PROXY") or "").strip() or None
     return Settings(
         text_model=ModelConfig(
             name=_require("TEXT_MODEL_NAME"),
             api_key=_require("TEXT_MODEL_API_KEY"),
             base_url=_require("TEXT_MODEL_BASE_URL"),
+            proxy=model_proxy,
         ),
         context_window=max(1, int(os.getenv("TEXT_MODEL_CONTEXT_WINDOW", "128000"))),
-        vision_model=_load_vision_model(),
+        vision_model=_load_vision_model(model_proxy),
         max_rounds=int(os.getenv("MAX_ROUNDS", "5")),
         max_subagent_tool_iterations=max(
             1, int(os.getenv("MAX_SUBAGENT_TOOL_ITERATIONS", "24"))

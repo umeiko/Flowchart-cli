@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from flowchart_agent.cancellation import OperationCancelled, run_cancellable_process
+from flowchart_agent.config import ModelConfig
+from flowchart_agent.llm import client as client_module
 from flowchart_agent.llm.client import LLMClient, _collect_stream
 
 
@@ -17,6 +19,32 @@ def _text_chunk(text: str):
             content=text, reasoning_content=None, tool_calls=None,
         ))]
     )
+
+
+@pytest.mark.parametrize("proxy", [None, "http://127.0.0.1:7890"])
+def test_llm_client_ignores_system_proxy_and_only_uses_configured_proxy(
+    monkeypatch, proxy
+):
+    captured = {}
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            captured["http"] = kwargs
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["openai"] = kwargs
+
+    monkeypatch.setattr(client_module, "DefaultHttpxClient", FakeHttpClient)
+    monkeypatch.setattr(client_module, "OpenAI", FakeOpenAI)
+
+    llm = LLMClient(ModelConfig(
+        name="test", api_key="test", base_url="http://model.local/v1", proxy=proxy
+    ))
+    llm._get_client()
+
+    assert captured["http"] == {"proxy": proxy, "trust_env": False}
+    assert captured["openai"]["http_client"].__class__ is FakeHttpClient
 
 
 def test_stream_collection_honours_cancel_between_chunks():
