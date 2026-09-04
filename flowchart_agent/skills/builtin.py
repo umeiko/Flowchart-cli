@@ -21,6 +21,24 @@ _MAX_GREP_RESULTS = 50
 _MAX_LIST_ENTRIES = 200
 _MAX_FIND_WALK = 5000  # 最多遍历的文件数，防止在大目录里卡死
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+_DOC_WARN_BYTES = 20 * 1024  # 超过该大小的文件默认只返回开头预览，保护上下文
+_HEAD_TOKENS = 100  # 截断预览的估算 token 数
+_GREP_TRUNC_TOKENS = 2000  # grep 输出估算 token 超过此值视为超大，需截断
+
+
+def _estimate_tokens(text: str) -> float:
+    """与 main_agent 一致的粗略估算：CJK 计 1，其他计 0.25。"""
+    return sum(1.0 if ord(char) >= 0x2E80 else 0.25 for char in text)
+
+
+def _head_by_tokens(text: str, max_tokens: float = _HEAD_TOKENS) -> str:
+    """截取开头约 max_tokens 个估算 token 的文本。"""
+    budget = 0.0
+    for index, char in enumerate(text):
+        budget += 1.0 if ord(char) >= 0x2E80 else 0.25
+        if budget >= max_tokens:
+            return text[: index + 1]
+    return text
 
 
 def _format_file_size(size: int) -> str:
@@ -156,57 +174,100 @@ def grep_files(
     pattern: str,
     directory: str = ".",
     file_glob: str = "",
+    path: str = "",
+    force_read: bool = False,
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
     should_cancel: CancelCheck = None,
+    allow_force_read: bool = False,
 ) -> str:
     raise_if_cancelled(should_cancel)
+    if force_read and not allow_force_read:
+        return (
+            "错误：force_read 仅限子 Agent 使用。"
+            "请改用 delegate_task 派子 Agent 执行全文检索并总结要点。"
+        )
     try:
         rx = re.compile(pattern)
     except re.error as e:
         return f"错误：正则表达式不合法：{e}"
     if file_glob and not _valid_file_glob(file_glob):
         return "错误：文件名过滤条件不能越出当前 Session"
-    try:
-        roots = _search_roots(directory, root, readable_roots)
-    except ValueError as e:
-        return f"错误：{e}"
-    if not all(search_root.is_dir() for search_root in roots):
-        return f"错误：目录不存在：{directory}"
     results: list[str] = []
-    walked = 0
-    for search_root in roots:
-        for p in search_root.rglob(file_glob or "*"):
+    if path:
+        # 只搜单个文件（模型想查某一个文件时直接给 path，无需 directory+file_glob）
+        try:
+            target = resolve_readable_path(path, root, readable_roots)
+        except ValueError as e:
+            return f"错误：{e}"
+        if not target.is_file():
+            return f"错误：文件不存在：{path}"
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            return f"错误：不是 UTF-8 文本文件：{path}"
+        size_label = _format_file_size(target.stat().st_size)
+        for i, line in enumerate(lines, 1):
             raise_if_cancelled(should_cancel)
-            relative_parts = p.relative_to(search_root).parts
-            if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
-                continue
-            if not p.is_file():
-                continue
-            walked += 1
-            try:
-                lines = p.read_text(encoding="utf-8").splitlines()
-            except (UnicodeDecodeError, OSError):
-                continue  # 跳过二进制/非 UTF-8 文件
-            size_label = _format_file_size(p.stat().st_size)
-            for i, line in enumerate(lines, 1):
+            if rx.search(line):
+                results.append(
+                    f"{_display_read_path(target, root)}:{i}: "
+                    f"[{size_label}] {line.strip()[:150]}"
+                )
+                if len(results) >= _MAX_GREP_RESULTS:
+                    break
+        scope = _display_read_path(target, root)
+    else:
+        try:
+            roots = _search_roots(directory, root, readable_roots)
+        except ValueError as e:
+            return f"错误：{e}"
+        if not all(search_root.is_dir() for search_root in roots):
+            return f"错误：目录不存在：{directory}"
+        walked = 0
+        for search_root in roots:
+            for p in search_root.rglob(file_glob or "*"):
                 raise_if_cancelled(should_cancel)
-                if rx.search(line):
-                    results.append(
-                        f"{_display_read_path(p, root)}:{i}: "
-                        f"[{size_label}] {line.strip()[:150]}"
-                    )
-                    if len(results) >= _MAX_GREP_RESULTS:
-                        break
+                relative_parts = p.relative_to(search_root).parts
+                if any(part in _SKIP_DIRS or part.startswith(".") for part in relative_parts):
+                    continue
+                if not p.is_file():
+                    continue
+                walked += 1
+                try:
+                    lines = p.read_text(encoding="utf-8").splitlines()
+                except (UnicodeDecodeError, OSError):
+                    continue  # 跳过二进制/非 UTF-8 文件
+                size_label = _format_file_size(p.stat().st_size)
+                for i, line in enumerate(lines, 1):
+                    raise_if_cancelled(should_cancel)
+                    if rx.search(line):
+                        results.append(
+                            f"{_display_read_path(p, root)}:{i}: "
+                            f"[{size_label}] {line.strip()[:150]}"
+                        )
+                        if len(results) >= _MAX_GREP_RESULTS:
+                            break
+                if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
+                    break
             if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
                 break
-        if len(results) >= _MAX_GREP_RESULTS or walked >= _MAX_FIND_WALK:
-            break
-    if not results:
         scope = "、".join(_display_read_path(item, root) for item in roots)
+    if not results:
         return f"没有匹配 {pattern!r} 的内容（搜索范围：{scope}）"
     suffix = f"（已达 {_MAX_GREP_RESULTS} 条上限）" if len(results) >= _MAX_GREP_RESULTS else ""
-    return f"找到 {len(results)} 处匹配{suffix}：\n" + "\n".join(results)
+    output = f"找到 {len(results)} 处匹配{suffix}：\n" + "\n".join(results)
+    if not force_read and _estimate_tokens(output) > _GREP_TRUNC_TOKENS:
+        return (
+            f"找到 {len(results)} 处匹配{suffix}，但结果过大，直接返回会严重占用上下文，"
+            "仅给出开头预览：\n"
+            f"{_head_by_tokens(output)}\n…\n"
+            "提示：请收窄查询方式（更精确的正则，或用 path 只搜单个文件、"
+            "限定 directory/file_glob），"
+            "或用 delegate_task 派子 Agent 全文检索后总结要点"
+            "（子 Agent 可用 force_read=true 获取完整结果）。"
+        )
+    return output
 
 
 class ImageQueue(Protocol):
@@ -227,11 +288,18 @@ class CommandRunner(Protocol):
 
 def read_document(
     path: str,
+    force_read: bool = False,
     root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
     should_cancel: CancelCheck = None,
+    allow_force_read: bool = False,
 ) -> str:
     raise_if_cancelled(should_cancel)
+    if force_read and not allow_force_read:
+        return (
+            "错误：force_read 仅限子 Agent 使用。"
+            "请改用 delegate_task 派子 Agent 读取该文件并提炼所需信息。"
+        )
     try:
         p = resolve_readable_path(path, root, readable_roots)
     except ValueError as e:
@@ -247,14 +315,24 @@ def read_document(
                     _display_read_path(p.parent / c, root) for c in close
                 )
         return f"错误：文件不存在：{path}{hint}"
-    if p.stat().st_size > _MAX_DOC_BYTES:
+    size = p.stat().st_size
+    if size > _MAX_DOC_BYTES:
         return f"错误：文件超过 200KB，请精简后再试：{path}"
     try:
         text = p.read_text(encoding="utf-8")
         raise_if_cancelled(should_cancel)
-        return text
     except UnicodeDecodeError:
         return f"错误：不是 UTF-8 文本文件：{path}"
+    if not force_read and size > _DOC_WARN_BYTES:
+        return (
+            f"警告：文件 {_display_read_path(p, root)} 大小为 {_format_file_size(size)}，"
+            "全文进入上下文会非常危险，仅返回开头预览：\n"
+            f"{_head_by_tokens(text)}\n…\n"
+            "提示：文件过大。请用 grep_files 查询你感兴趣的内容，"
+            "或用 delegate_task 派子 Agent 提取你想要的信息"
+            "（子 Agent 可用 force_read=true 强制全读，汇报后其上下文即销毁）。"
+        )
+    return text
 
 
 def find_files(
@@ -434,35 +512,49 @@ def build_skills(
     readable_root: Path | None = None,
     readable_roots: Iterable[Path] | None = None,
     should_cancel: CancelCheck = None,
+    allow_force_read: bool = False,
 ) -> list[Skill]:
     """构建主 Agent 的工具表。ocr_llm 不为 None 时注册 ocr_image
     （主模型无视觉能力时，用多模态验证模型做图片文字提取）；
-    command_runner 不为 None 时注册 run_command（界面层提供确认与进程管理）。"""
+    command_runner 不为 None 时注册 run_command（界面层提供确认与进程管理）；
+    allow_force_read 为 True 时（子 Agent）允许 read_document/grep_files
+    使用 force_read=true 强制返回完整内容。"""
     writable_root = session.output_dir  # write_file/replace_in_file 的写入边界
     session_path_hint = (
         "服务端仅允许当前 Session，路径必须使用 workspace/、attachments/、generate/"
         "或 check/ 开头的 Session 相对路径；返回结果也只显示相对路径。"
         if readable_root is not None else ""
     )
+    force_read_hint = (
+        "需要完整内容时可用 force_read=true 强制全读，读完后只提炼要点返回。"
+        if allow_force_read
+        else "force_read=true 仅子 Agent 可用（主 Agent 调用会被拒绝）；"
+        "需要大文件全文时请 delegate_task 派子 Agent 提炼。"
+    )
     skills = [
         Skill(
             name="read_document",
             description=(
-                "读取本地需求文档（.txt/.md 等 UTF-8 文本文件），返回全文内容。"
-                "全文会进入当前 Agent 上下文；主 Agent 若从 find_files/grep_files 发现文件"
-                "较大（建议 32KB 以上），应优先调用 delegate_task 交给子 Agent 提炼，"
-                "不要直接读取全文。" + session_path_hint
+                "读取本地需求文档（.txt/.md 等 UTF-8 文本文件）。"
+                "超过 20KB 的大文件默认只返回开头约 100 token 的预览和警告，"
+                "以保护上下文；需要其中具体内容时优先 grep_files 定位。"
+                + force_read_hint + session_path_hint
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文档文件路径"},
+                    "force_read": {
+                        "type": "boolean",
+                        "description": "强制返回完整内容（仅限子 Agent），默认 false",
+                        "default": False,
+                    },
                 },
                 "required": ["path"],
             },
             handler=partial(
                 read_document, root=readable_root, readable_roots=readable_roots,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, allow_force_read=allow_force_read,
             ),
         ),
         Skill(
@@ -563,12 +655,20 @@ def build_skills(
             description=(
                 "按正则表达式搜索文件内容，返回 文件:行号: 匹配行。"
                 "每条结果包含文件大小，用于在中间文档/代码中定位内容"
-                "（配合 replace_in_file 修改）。" + session_path_hint
+                "（配合 replace_in_file 修改）。只搜某一个文件时直接传 path，"
+                "不要用 directory+file_glob 凑。结果过大时会被截断为约 100 token"
+                " 的预览并提示，此时请收窄 pattern，或用 path 限定单个文件。"
+                + force_read_hint + session_path_hint
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "正则表达式，如 保存设置"},
+                    "path": {
+                        "type": "string",
+                        "description": "只搜索这一个文件（优先于 directory/file_glob），如 workspace/需求.md",
+                        "default": "",
+                    },
                     "directory": {
                         "type": "string",
                         "description": "搜索的起始目录，默认当前目录",
@@ -579,12 +679,17 @@ def build_skills(
                         "description": "文件名过滤，如 *.md；默认所有文件",
                         "default": "",
                     },
+                    "force_read": {
+                        "type": "boolean",
+                        "description": "结果超大时仍返回完整内容（仅限子 Agent），默认 false",
+                        "default": False,
+                    },
                 },
                 "required": ["pattern"],
             },
             handler=partial(
                 grep_files, root=readable_root, readable_roots=readable_roots,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, allow_force_read=allow_force_read,
             ),
         ),
         Skill(

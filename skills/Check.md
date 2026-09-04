@@ -16,14 +16,19 @@ kind: check
 
 ## execution
 
-本 Skill 由文件子 Agent 使用通用 `image_reasoning` 工具执行，Core 不负责解释或运行下面的检查项。
+主 Agent 负责编排（判断素材规模、派遣子 Agent、汇总结论），文件子 Agent 负责具体执行
+（读取文档、调用通用 `image_reasoning` 工具、落盘报告）；Core 不内置检查项、
+适用性判断或报告格式，下面的检查项只能由子 Agent 按本 Skill 执行。
 
 1. 根据用户原始需求选择检查项：用户明确点名时只执行点名项；未点名时执行适用于当前图片的全部检查项。不得补充本 Skill 以外的检查标准；
-2. 只有检查项需要图文一致性时才读取对应文档。文档较长时，只提取与当前图片和检查项相关的段落，不把多份全文堆进一次调用；
-3. 每个“图片 × 检查项”单独调用一次 `image_reasoning`。prompt 必须包含该检查项的完整说明、必要文档内容以及本 Skill 的 `PASS/FAIL/NA` 输出协议；图片通过 `image_paths` 传入；
+2. 只有检查项需要图文一致性时才读取对应文档。文档按规模分级处理（`list_dir`/`find_files` 会返回文件大小；约 20KB 以上视为大文档，`read_document` 对它们只返回开头预览）：
+   - 不涉及文档，或全部为小文档：一次 `delegate_task` 派一个子 Agent 读取全部所需文档并执行检查；
+   - 涉及一个或多个大文档：先逐份 `delegate_task` 各派一个子 Agent 提炼——每个子 Agent 只负责一份大文档，可用 `force_read=true` 全读（其上下文汇报后即销毁），把与图片和检查项相关的内容提炼为摘录文件（如 `check_results/<任务>/extracts/<文档名>.md`）——再把摘录文件与小文档一起交给执行检查的子 Agent。不要把多份大文档原文塞给同一个子 Agent，它的上下文也顶不住；
+   - 只需核对局部内容时，让子 Agent 用 `grep_files` 在大文档中定位相关段落，不通读全文；
+3. 每个“图片 × 检查项”由子 Agent 单独调用一次 `image_reasoning`。prompt 必须包含该检查项的完整说明、必要文档内容以及本 Skill 的 `PASS/FAIL/NA` 输出协议；图片通过 `image_paths` 传入；
 4. 不要预先调用视觉模型做一轮通用图片描述，也不要根据文件名直接判断通过、不通过或不适用；适用性也由该次 `image_reasoning` 按检查项的 `applies_to` 判断；
 5. 收到工具结果后，按首行 `PASS`、`FAIL`、`NA` 记录，不改写模型结论；
-6. 所有调用完成后，用 `write_file` 写 CSV。列固定为 `image,check_id,check_name,result,findings`，一行对应一次图像推理；随后向用户汇总通过、不通过、不适用数量和报告路径。
+6. 所有调用完成后，由子 Agent 用 `write_file` 写 CSV。列固定为 `image,check_id,check_name,result,findings`，一行对应一次图像推理；主 Agent 随后向用户汇总通过、不通过、不适用数量和报告路径。
 
 ## batch
 

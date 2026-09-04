@@ -608,6 +608,16 @@ class AgentService:
             self.store.save_context_summary(session_id, summary, retained)
             return response
 
+    def clear_context(self, session_id: str) -> dict:
+        session = self.get_session(session_id)
+        active = session.active_run_holder["run"]
+        if active is not None and active.status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("任务运行中，暂时不能清空上下文")
+        with session.lock:
+            result = session.agent.clear_context()
+            self.store.clear_context(session_id)
+            return result
+
     def cancel_run(self, run_id: str) -> RunState:
         run = self.get_run(run_id)
         run.request_cancel()

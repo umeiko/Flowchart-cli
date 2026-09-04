@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 8
 _BATCH_TERMS = ("批量", "目录", "全部图片", "所有图片", "一批")
+# 非批量检查任务的引导前缀：流程由检查 Skill 定义，Core 只提供 delegate_task 等内置能力
+_CHECK_TASK_STEER = (
+    "[系统] 本轮是图片/文档检查任务，不要自己直接下检查结论：先 use_skill 读取当前"
+    " Session 的检查 Skill（kind: check），严格遵照其 execution 流程编排——用 "
+    "list_dir/find_files 判断各文档大小：全部为小文档时可派一个子 Agent 读完并检查；"
+    "涉及大文档时逐份 delegate_task 派子 Agent 提炼（子 Agent 可用 force_read=true "
+    "全读一份大文档，其上下文汇报后即销毁），再把摘录文件交给检查子 Agent；图片检查"
+    "一律由子 Agent 通过 image_reasoning 完成。若没有可用检查 Skill 或没有视觉模型，"
+    "如实告知用户，不得臆造审查标准。\n\n"
+)
 _BATCH_PATH = re.compile(
     r"(?P<path>(?:[A-Za-z]:[\\/]|(?:workspace|attachments|generate|check)[\\/])"
     r"[^\s，。；;！？!?\"'<>]+)"
@@ -50,16 +60,22 @@ COMPACT_SYSTEM = """你负责压缩 Agent 对话上下文。请把所给历史�
 MAIN_SYSTEM = """你是一个流程图生成助手的主控 Agent，通过调用工具帮用户完成流程图工作。
 
 意图判断：
-- 用户给出文档路径：先用 find_files 按文件名确认路径和大小；普通文件再 read_document，
+- 用户给出文档路径：先用 find_files 按文件名确认路径和大小；小文件再 read_document，
   然后用 create_diagram 以文档内容为需求生成图；
-- find_files/grep_files 返回文件大小；文件较大（建议 32KB 以上）、需要跨多文件检索，
-  或只需从大文件提炼局部信息时，优先用 delegate_task 交给文件子 Agent，保护主上下文；
+- find_files/grep_files 返回文件大小；read_document 对超过 20KB 的文件只返回开头预览，
+  grep_files 结果超大时也会截断并提示。遇到大文件、需要跨多文件检索，
+  或只需从大文件提炼局部信息时，优先用 delegate_task 交给文件子 Agent，保护主上下文
+  （子 Agent 可用 force_read=true 强制全读，其上下文汇报后即销毁）；
   同一时刻只能运行一个子 Agent，任务描述必须写清目标、范围、路径和期望输出；
 - 用户直接口述新图需求：直接 create_diagram；若用户提供了参考图片路径，传给 image_path；
   用户明确说“快速作图”“简单画一下”“尽快给我”“直接出图”或“不用验证”时，
   create_diagram 必须传 visual_verification=false；其他情况不传或保持 true；
 - 用户消息中直接附带了图片内容：结合图片理解需求，再 create_diagram 或 modify_diagram；
 - 用户给出图片路径并希望你查看：read_image（无视觉能力时改用 ocr_image 提取文字）；
+- 用户要求检查/质检图片或文档（图文一致性、敏感信息、截图核对等）：先 use_skill
+  读取检查 Skill（kind: check，如 check），严格按其 execution 流程编排——文档先按
+  大小分级，大文档逐份 delegate_task 派子 Agent 提炼，图片检查由子 Agent 用
+  image_reasoning 执行，不要自己看图下结论；没有检查 Skill 时如实告知用户；
 - 用户提供多份素材（多份文档/图片）或需求复杂：先用 read_document / ocr_image
   逐份获取素材内容，write_working_doc 整合成工作文档（markdown：各素材要点 +
   初步生成方案），再基于工作文档 create_diagram；工作文档可随时 read_working_doc
@@ -287,10 +303,24 @@ class MainAgent:
             return {**before, "compressed": False, "reason": "没有可压缩的历史上下文"}
 
         transcript = json.dumps(old, ensure_ascii=False, default=str)
-        summary = self._llm.chat([
-            {"role": "system", "content": COMPACT_SYSTEM},
-            {"role": "user", "content": transcript},
-        ]).strip()
+        if self._estimate_tokens(transcript) > self._settings.context_window * 0.6:
+            return {
+                **before,
+                "compressed": False,
+                "reason": "历史已超出模型窗口，压缩请求会被供应商拒绝；请改用「强制清空上下文」",
+            }
+        try:
+            summary = self._llm.chat([
+                {"role": "system", "content": COMPACT_SYSTEM},
+                {"role": "user", "content": transcript},
+            ]).strip()
+        except Exception as exc:
+            logger.warning("上下文压缩请求被供应商拒绝：%s", exc)
+            return {
+                **before,
+                "compressed": False,
+                "reason": f"压缩请求被供应商拒绝（{exc}）；请改用「强制清空上下文」",
+            }
         if not summary:
             return {**before, "compressed": False, "reason": "模型未返回有效摘要"}
 
@@ -314,6 +344,11 @@ class MainAgent:
                 1 for item in tail if item.get("role") in {"user", "assistant"}
             ),
         }
+
+    def clear_context(self) -> dict:
+        """清空全部对话历史（仅保留 system 提示词），压缩不可行时的兜底。"""
+        self._messages = [self._messages[0]]
+        return {**self.context_stats(), "cleared": True}
 
     def _batch_plan_path(self) -> tuple[str, Path]:
         relative = f"batch_plans/batch_plan_{uuid4().hex[:10]}.json"
@@ -627,20 +662,11 @@ JSON 顶层格式：
                         {"role": "assistant", "content": reply},
                     ])
                     return reply
-                try:
-                    reply = self._run_skill_check_case(
-                        user_input, images or []
-                    )
-                except OperationCancelled:
-                    return self._cancelled_reply()
-                # 检查分支虽不使用主 Agent 工具循环，也属于用户的会话上下文；
-                # 保持其文本轮次与 Server 持久化消息一一对应，便于后续压缩/恢复。
-                self._messages.extend([
-                    {"role": "user", "content": history_text},
-                    {"role": "assistant", "content": reply},
-                ])
-                return reply
-            logger.warning("[route] 无 output_root，check 分支回退主 Agent 流程")
+                # 非批量检查不做硬编码编排：给本轮输入加引导前缀后进入主 Agent
+                # 工具循环，流程由检查 Skill 定义，执行走 delegate_task/子 Agent。
+                history_text = _CHECK_TASK_STEER + history_text
+            else:
+                logger.warning("[route] 无 output_root，check 分支回退主 Agent 流程")
 
         if category == "generate":
             active_skills = self._session.active_skill_packs()

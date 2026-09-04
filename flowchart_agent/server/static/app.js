@@ -8,6 +8,9 @@ const ui = {
   attachments: document.querySelector("#attachments"),
   contextStatus: document.querySelector("#context-status"),
   compactContext: document.querySelector("#compact-context"),
+  contextMenu: document.querySelector("#context-menu"),
+  contextMenuCompact: document.querySelector("#context-menu-compact"),
+  contextMenuClear: document.querySelector("#context-menu-clear"),
   status: document.querySelector("#status"),
   statusDot: document.querySelector("#status-dot"),
   canvas: document.querySelector("#canvas"),
@@ -1947,7 +1950,30 @@ ui.stop.addEventListener("click", async () => {
   }
 });
 
-ui.compactContext.addEventListener("click", async () => {
+function closeContextMenu() {
+  ui.contextMenu.classList.add("hidden");
+  ui.compactContext.setAttribute("aria-expanded", "false");
+}
+
+ui.compactContext.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (ui.compactContext.disabled) return;
+  const opened = ui.contextMenu.classList.toggle("hidden") === false;
+  ui.compactContext.setAttribute("aria-expanded", String(opened));
+});
+
+document.addEventListener("click", (event) => {
+  if (!ui.contextMenu.classList.contains("hidden") && !event.target.closest(".context-menu-wrap")) {
+    closeContextMenu();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeContextMenu();
+});
+
+ui.contextMenuCompact.addEventListener("click", async () => {
+  closeContextMenu();
   if (!sessionId || activeRunId) return;
   const targetSessionId = sessionId;
   ui.compactContext.disabled = true;
@@ -1967,7 +1993,27 @@ ui.compactContext.addEventListener("click", async () => {
   } catch (error) {
     setStatus(error.message);
   } finally {
-    ui.compactContext.textContent = "压缩";
+    ui.compactContext.textContent = "上下文 ▾";
+    ui.compactContext.disabled = Boolean(activeRunId);
+  }
+});
+
+ui.contextMenuClear.addEventListener("click", async () => {
+  closeContextMenu();
+  if (!sessionId || activeRunId) return;
+  if (!confirm("将强制清空 Agent 的对话上下文（聊天记录仍保留，但 Agent 不再记得之前的内容），确定？")) return;
+  const targetSessionId = sessionId;
+  ui.compactContext.disabled = true;
+  setStatus("正在清空上下文");
+  try {
+    const stats = await api(`/v1/sessions/${targetSessionId}/context/clear`, {method: "POST"});
+    if (targetSessionId !== sessionId) return;
+    renderContextStats(stats);
+    addMessage("上下文已强制清空，Agent 将不再记得此前的对话内容。", "progress");
+    setStatus("上下文已清空", true);
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
     ui.compactContext.disabled = Boolean(activeRunId);
   }
 });

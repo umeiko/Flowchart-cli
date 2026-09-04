@@ -129,7 +129,10 @@ Session 执行 Run 时返回 `409`。Web 文件树支持拖拽移动和右键复
 - `GET /v1/sessions/{session_id}/context`：返回主 Agent 当前消息、工具定义和总上下文的
   token 估算、配置窗口及占用百分比。
 - `POST /v1/sessions/{session_id}/context/compact`：调用一次主文本模型，把旧对话与工具结果
-  压缩成工作摘要并保留最近一轮；Run 执行中返回 `409`。
+  压缩成工作摘要并保留最近一轮；Run 执行中返回 `409`。历史过大导致压缩请求被供应商
+  拒绝时不抛错，返回 `compressed=false` 及 `reason`，提示改用强制清空。
+- `POST /v1/sessions/{session_id}/context/clear`：强制清空 Agent 的对话上下文
+  （仅保留 system 提示词），不调用模型；Run 执行中返回 `409`。
 
 统计使用跨模型的近似字符算法，仅用于容量提示，不等同于模型供应商计费 token。
 窗口大小由 `.env` 的 `TEXT_MODEL_CONTEXT_WINDOW` 配置，默认 `128000`。Web 的摘要与截断点

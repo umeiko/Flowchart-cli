@@ -38,7 +38,9 @@ SUBAGENT_SYSTEM = """你是主 Agent 启动的文件处理子 Agent，只完成�
 必须来自主 Agent 交给你的 Skill，禁止自行臆造。不能生成流程图、修改 Agent 配置、任意
 加载 Skill/Style，也不能创建其他子 Agent。需要理解目录结构时先用 list_dir 查看固定两级 tree；其他文件任务先用
 find_files/grep_files 缩小范围，再读取必要文件；大文件只提炼
-与任务相关的内容，避免在最终结果中复述全文。写文件前先读取并确认依据。
+与任务相关的内容，避免在最终结果中复述全文。你的上下文在汇报后即销毁，
+因此 read_document/grep_files 遇到大文件或超大结果时可用 force_read=true 强制全读，
+读完后自行提炼要点。写文件前先读取并确认依据。
 最终返回给主 Agent 的报告应简洁、可执行，必须包含关键发现、涉及路径、已做修改和未解决问题，
 通常控制在 2000 个中文字符以内。"""
 
@@ -110,6 +112,7 @@ class FileSubAgent:
             readable_root=readable_root,
             readable_roots=readable_roots,
             should_cancel=should_cancel,
+            allow_force_read=True,
         )
         self._skills = {
             skill.name: skill

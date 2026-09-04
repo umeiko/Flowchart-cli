@@ -55,7 +55,13 @@
           <div id="attachments" class="attachments"></div>
           <div class="context-controls" title="上下文长度为近似估算，不代表供应商计费 token">
             <span id="context-status">上下文 --</span>
-            <button id="compact-context" type="button">压缩</button>
+            <div class="context-menu-wrap">
+              <button id="compact-context" type="button" aria-haspopup="menu" aria-expanded="false">上下文 ▾</button>
+              <div id="context-menu" class="context-menu hidden" role="menu">
+                <button id="context-menu-compact" type="button" role="menuitem">压缩上下文</button>
+                <button id="context-menu-clear" type="button" role="menuitem">强制清空上下文</button>
+              </div>
+            </div>
           </div>
           <textarea id="prompt" rows="3" placeholder="例如：画一个带验证码和失败重试的登录流程（Enter 生成，Shift+Enter 换行）" required></textarea>
           <button id="send" type="submit">生成</button>

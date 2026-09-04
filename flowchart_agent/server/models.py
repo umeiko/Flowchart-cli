@@ -47,6 +47,7 @@ class ContextView(BaseModel):
     compressed: bool = False
     before_tokens: int | None = None
     reason: str | None = None
+    cleared: bool = False
 
 
 class SessionTitlePatch(BaseModel):

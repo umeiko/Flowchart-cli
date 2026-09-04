@@ -258,6 +258,16 @@ class Store:
                 (summary, cutoff, _now(), session_id),
             )
 
+    def clear_context(self, session_id: str) -> None:
+        """截断上下文恢复点：摘要置空、cutoff 推到最新消息（消息记录保留）。"""
+        with self.connect() as db:
+            db.execute(
+                "UPDATE agent_sessions SET context_summary=NULL,"
+                "context_cutoff_id=(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?),"
+                "updated_at=? WHERE id=?",
+                (session_id, _now(), session_id),
+            )
+
     def resource_mounts(self, session_id: str) -> dict[str, set[str]]:
         with self.connect() as db:
             rows = db.execute(

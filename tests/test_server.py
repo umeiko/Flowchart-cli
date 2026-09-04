@@ -567,7 +567,7 @@ def test_server_agent_file_tools_cannot_escape_current_session(tmp_path):
     assert str(state.root) not in replace_result
     assert "delegate_task" in tools
     assert "list_dir" in tools
-    assert "32KB" in tools["read_document"].description
+    assert "20KB" in tools["read_document"].description
     assert "Session 相对路径" in tools["find_files"].description
     assert "Session 相对路径" in state.agent._messages[0]["content"]
     assert state.agent._subagent.tool_names == {

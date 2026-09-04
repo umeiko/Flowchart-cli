@@ -482,6 +482,17 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.post(
+        "/v1/sessions/{session_id}/context/clear",
+        response_model=ContextView,
+        tags=["sessions"],
+    )
+    def clear_session_context(session_id: str) -> ContextView:
+        try:
+            return ContextView(**service.clear_context(session_id))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.get("/v1/sessions/{session_id}", response_model=SessionView, tags=["sessions"])
     def read_session(session_id: str) -> SessionView:
         return _session_view(get_session(session_id))

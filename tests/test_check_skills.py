@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from flowchart_agent.check.agent import CheckAgent
 from flowchart_agent.check.classifier import CheckClassifier
@@ -348,3 +349,40 @@ def test_batch_check_route_plans_then_runs_each_case_independently(
     assert len(summaries) == 1
     summary = json.loads(summaries[0].read_text(encoding="utf-8"))
     assert summary["totals"] == {"passed": 2, "failed": 0, "not_applicable": 0}
+
+
+def test_check_skill_execution_grades_documents_by_size():
+    """Check Skill 的执行协议应描述文档分级：大文档逐份 delegate_task 提炼。"""
+    text = Path("skills/Check.md").read_text(encoding="utf-8")
+    execution = text.split("## execution", 1)[1].split("## batch", 1)[0]
+    assert "delegate_task" in execution
+    assert "force_read=true" in execution
+    assert "20KB" in execution
+
+
+def test_check_route_is_skill_driven_without_hardcoded_dispatch(tmp_path, monkeypatch):
+    """非批量 check 路由进入主 Agent 工具循环（Skill 驱动），不再硬编码派单子 Agent。"""
+    monkeypatch.setattr(
+        main_agent_module, "route_category", lambda *_args, **_kwargs: "check"
+    )
+    session = DiagramSession(_settings(), tmp_path / "generate")
+    agent = MainAgent(_settings(), session, output_root=tmp_path)
+
+    def fail_subagent(*_args, **_kwargs):
+        raise AssertionError("check 不应由硬编码编排直接派单子 Agent")
+
+    agent._subagent.run = fail_subagent
+    captured = {}
+
+    def fake_chat_with_tools(messages, tools, should_cancel=None):
+        captured["user"] = messages[-1]["content"]
+        captured["tools"] = {tool["function"]["name"] for tool in tools}
+        return SimpleNamespace(content="请先提供审查标准 Skill", tool_calls=[])
+
+    agent._llm.chat_with_tools = fake_chat_with_tools
+    reply = agent.chat("检查 workspace/ui.png 的敏感信息")
+
+    assert reply == "请先提供审查标准 Skill"
+    assert "use_skill" in captured["user"]
+    assert "delegate_task" in captured["tools"]
+    assert "image_reasoning" in captured["user"]
